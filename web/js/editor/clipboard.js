@@ -220,6 +220,7 @@ async function insertFiles(ed, files, afterBlock, position = 'after') {
       } else if (position === 'before') ed.insertBefore(target, blocks);
       else ed.insertAfter(target, blocks);
     } else ed.appendTop(blocks);
+    ed.sizeNewImages(blocks);
     ed.selectBlocks(blocks);
     ed.changed();
   } catch (err) {

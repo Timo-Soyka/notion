@@ -82,7 +82,7 @@ export const COMMANDS = [
 
   { group: 'Medien', id: 'image', label: 'Bild', desc: 'Foto, Skizze, Screenshot', icon: 'image', kw: 'bild foto image abbildung screenshot grafik', run: async (ed, b) => {
     const res = await ed.host.pickFiles('image');
-    if (res && res.length) { const nb = ed.setType(b, 'image', { src: res[0].link, caption: '' }); ed.selectBlocks([nb]); }
+    if (res && res.length) { const nb = ed.setType(b, 'image', { src: res[0].link, caption: '' }); ed.sizeNewImages([nb]); ed.selectBlocks([nb]); }
     else ed.setType(b, 'image', { src: '' });
   } },
   { group: 'Medien', id: 'pdf', label: 'Arbeitsblatt (PDF)', desc: 'PDF-Seiten einbetten', icon: 'pdf', kw: 'pdf arbeitsblatt einbetten dokument blatt', run: async (ed, b) => {

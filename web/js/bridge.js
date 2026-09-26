@@ -36,6 +36,30 @@ export async function call(cmd, args = {}) {
   return mock[cmd](args);
 }
 
+// Versionsnummer je Datei. Die WebView merkt sich ein Bild pro Adresse und
+// fragt nicht noch einmal nach – ändert sich die Datei (im Bildeditor, im
+// PDF-Editor oder außerhalb von Heft), bekommt ihre Adresse deshalb eine neue
+// Nummer: aus dem Änderungsdatum in DEVONthink und einem Zähler für
+// Änderungen in Heft selbst.
+const stamps = new Map();
+const bumps = new Map();
+export function assetVersion(uuid) {
+  const s = stamps.get(uuid) || '', n = bumps.get(uuid) || 0;
+  return n ? `${s}.${n}` : s;
+}
+// Änderungsdatum aus der Bibliothek; true, wenn es sich geändert hat
+export function setAssetStamp(uuid, modified) {
+  if (!uuid || !modified) return false;
+  const t = Date.parse(modified);
+  const v = Number.isFinite(t) ? t.toString(36) : String(modified).replace(/\W/g, '');
+  if (stamps.get(uuid) === v) return false;
+  const had = stamps.has(uuid);
+  stamps.set(uuid, v);
+  return had;
+}
+// In Heft geändert – sofort neu laden, ohne auf die Bibliothek zu warten
+export function touchAsset(uuid) { if (uuid) bumps.set(uuid, (bumps.get(uuid) || 0) + 1); }
+
 // Bild-/PDF-Adressen aus dem Markdown (x-devonthink-item://UUID) in etwas
 // verwandeln, das der WebView laden kann.
 export function assetURL(src, opts = {}) {
@@ -43,11 +67,12 @@ export function assetURL(src, opts = {}) {
   const m = /^x-devonthink-item:\/\/([^?#/]+)/i.exec(src);
   if (m) {
     const uuid = m[1];
+    const v = assetVersion(uuid);
     if (opts.page) {
       const w = opts.width || 1400;
-      return isNative ? `heft://pdfpage/${uuid}/${opts.page}?w=${w}` : mockAsset(uuid, opts.page);
+      return isNative ? `heft://pdfpage/${uuid}/${opts.page}?w=${w}${v ? '&v=' + v : ''}` : mockAsset(uuid, opts.page);
     }
-    return isNative ? `heft://item/${uuid}` : mockAsset(uuid);
+    return isNative ? `heft://item/${uuid}${v ? '?v=' + v : ''}` : mockAsset(uuid);
   }
   return src;
 }

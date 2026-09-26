@@ -4,7 +4,7 @@
 // Datensätze gesammelt ab, das dauert nur Sekundenbruchteile) und wird hier
 // für Suche, Pfadanzeige und "Zuletzt geöffnet" aufbereitet.
 
-import { call, on } from '../bridge.js';
+import { call, on, setAssetStamp } from '../bridge.js';
 import { naturalCompare } from '../ui/ui.js';
 import { subjectOfFolder } from '../core/subjects.js';
 import { isEntriesFolder, leadNumber } from '../core/filing.js';
@@ -42,9 +42,12 @@ export class Library {
 
   reindex() {
     this.index.clear();
+    // Geänderte Bilder, PDFs usw. merken – offene Einträge laden sie dann neu
+    this.changedFiles = [];
     const walk = (list, parent, path) => {
       for (const n of list) {
         this.index.set(n.uuid, { node: n, parent, path });
+        if (n.kind !== 'group' && n.kind !== 'note' && n.kind !== 'bundle' && setAssetStamp(n.uuid, n.modified)) this.changedFiles.push(n.uuid);
         if (n.children) walk(n.children, n, path ? path + ' / ' + n.name : n.name);
       }
     };

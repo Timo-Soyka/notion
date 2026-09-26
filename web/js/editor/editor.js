@@ -17,6 +17,7 @@ import {
 import * as caret from './caret.js';
 import { hydrateInlineMath } from './render/katex.js';
 import * as atoms from './blocks/atoms.js';
+import { widthForNew } from '../core/imagesize.js';
 import { plot, defaultPlotConfig } from './blocks/plot.js';
 import { smiles } from './blocks/smiles.js';
 import { table, emptyTable, tableMenu } from './blocks/table.js';
@@ -25,7 +26,7 @@ import { FormatBar, openInlineMath, openFootnote, openLinkPopover, linkHover } f
 import { runInputRules } from './rules.js';
 import { attachClipboard } from './clipboard.js';
 import { attachDnd } from './dnd.js';
-import { uuidFromLink } from '../bridge.js';
+import { uuidFromLink, assetURL, assetVersion } from '../bridge.js';
 import { normalizeMathSyntax, markColor, markName } from '../core/mathlines.js';
 import { headingNumbers, listLabel, parseNum } from '../core/numbering.js';
 import { subjectColor, colorDot } from '../core/subjects.js';
@@ -624,6 +625,61 @@ export class Editor {
   }
 
   notifyLayout() { this.dnd && this.dnd.refresh && this.dnd.refresh(); }
+
+  // Neue Bilder bekommen die Größe des Bildes davor (bzw. die Voreinstellung),
+  // damit alle Bilder eines Eintrags gleich groß bleiben
+  sizeNewImages(list) {
+    const imgs = (list || []).filter(b => b && b.type === 'image' && b.src && b.width == null);
+    if (!imgs.length) return;
+    for (const b of imgs) b._fresh = true;
+    for (const b of imgs) { const w = widthForNew(this.doc.blocks, b, this.settings.imageWidth); if (w) b.width = w; }
+    for (const b of imgs) { delete b._fresh; if (b.width && this.els.has(b.id)) this.rerender(b, { keepFocus: false }); }
+  }
+
+  // Bilder und PDF-Seiten neu laden, deren Datei sich geändert hat
+  // (im Bildeditor bearbeitet oder außerhalb von Heft, z. B. in Vorschau)
+  refreshAssets() {
+    for (const [id, el] of this.els) {
+      const b = this.find(id);
+      if (!b || !b.src) continue;
+      if (b.type === 'image') {
+        const img = el.querySelector(':scope > .blk-main .img-frame > img');
+        if (img && img.dataset.src === b.src && img.getAttribute('src') !== assetURL(b.src)) img.src = assetURL(b.src);
+      } else if (b.type === 'pdf') {
+        const pages = el.querySelector(':scope > .blk-main .pdf-pages');
+        if (pages && pages.dataset.v !== assetVersion(uuidFromLink(b.src))) this.rerender(b, { keepFocus: false });
+      }
+    }
+  }
+
+  // Welches Bild bzw. Arbeitsblatt ein Block ist – die Block-IDs gelten nur,
+  // solange der Eintrag offen ist, deshalb Datei und laufende Nummer
+  assetPosition(id) {
+    const b = this.find(id);
+    const uuid = b && uuidFromLink(b.src);
+    if (!uuid) return null;
+    const same = this.flat().filter(x => (x.type === 'image' || x.type === 'pdf') && uuidFromLink(x.src) === uuid);
+    return { uuid, nth: Math.max(0, same.indexOf(b)) };
+  }
+
+  // Nach dem Zurückkommen (z. B. aus dem Bildeditor) das Bild wieder zeigen
+  revealAsset({ uuid, nth = 0 } = {}) {
+    const same = this.flat().filter(x => (x.type === 'image' || x.type === 'pdf') && uuidFromLink(x.src) === uuid);
+    const b = same[Math.min(nth, same.length - 1)];
+    const el = b && this.els.get(b.id);
+    if (!el) return;
+    // Hohe Blöcke (mehrseitige Arbeitsblätter) oben anfangen, sonst mittig
+    const go = () => { if (this.els.get(b.id) === el) el.scrollIntoView({ block: el.offsetHeight > window.innerHeight * 0.8 ? 'start' : 'center' }); };
+    go();
+    this.selectBlocks([b]);
+    // Bilder weiter oben laden womöglich noch und verschieben alles – danach noch einmal
+    const pending = [...this.blocksEl.querySelectorAll('img')].filter(im => !im.complete);
+    if (pending.length) {
+      const loaded = Promise.all(pending.map(im => new Promise(r => { im.addEventListener('load', r, { once: true }); im.addEventListener('error', r, { once: true }); })));
+      Promise.race([loaded, new Promise(r => setTimeout(r, 1500))]).then(go);
+    }
+  }
+
 
   // -------------------------------------------------------------------------
   // Kopfbereich: Titel und Eigenschaften
@@ -1867,9 +1923,13 @@ export class Editor {
     if (['image', 'plot', 'smiles'].includes(b.type) && blocks.length === 1) {
       items.push('-', { label: b.caption || b._cap ? 'Beschriftung bearbeiten' : 'Beschriftung hinzufügen', icon: 'text', onSelect: () => { b._cap = true; b.caption = b.caption || ''; this.rerender(b); requestAnimationFrame(() => this.elOf(b)?.querySelector('.caption')?.focus()); } });
     }
+    if (b.type === 'image' && b.src && blocks.length === 1) {
+      items.push({ label: 'Größe', icon: 'resize', hint: atoms.imageSizeLabel(b), submenu: atoms.imageSizeItems(this, b) });
+      if (this.host.editImage) items.push({ label: 'Bild bearbeiten', icon: 'pencil', onSelect: () => this.host.editImage(b.src, b.id) });
+    }
     if ((b.type === 'image' || b.type === 'pdf') && b.src) {
       items.push({ label: 'In DEVONthink zeigen', icon: 'database', onSelect: () => this.host.revealLink(b.src) });
-      if (b.type === 'pdf') items.push({ label: 'Im PDF-Editor öffnen', icon: 'pencil', onSelect: () => this.host.openPDF(uuidFromLink(b.src)) });
+      if (b.type === 'pdf') items.push({ label: 'Im PDF-Editor öffnen', icon: 'pencil', onSelect: () => this.host.openPDF(uuidFromLink(b.src), b.id) });
     }
     UI.menu(anchor, items);
   }

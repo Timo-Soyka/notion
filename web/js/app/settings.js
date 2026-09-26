@@ -18,6 +18,7 @@ export const DEFAULTS = {
   syncTags: true,
   font: 'mono',
   fontSize: null,   // Punkt (pt) im PDF; null = je nach Schrift 12 bzw. 12,8 pt
+  imageWidth: 100,  // Breite neuer Bilder in % – wenn der Eintrag noch kein Bild hat
   numbering: '1.1',
   numberDepth: 3,
   numberPrefix: false,
@@ -176,6 +177,7 @@ export function openSettings(app, section = 'general') {
       h('h3', { text: 'Editor' }), h('p', { class: 'desc', text: 'Voreinstellungen für neue Einträge. Einzelne Einträge kannst du über „⋯“ oben rechts anpassen.' }),
       row('Schrift', 'Standard, Serifen oder Monospace (SF Mono).', seg([['sans', 'Standard'], ['serif', 'Serif'], ['mono', 'Mono']], s.font, (v) => { save({ font: v }); app.refreshEditorSettings(); })),
       row('Schriftgröße', 'Gilt für alle Einträge ohne eigene Größe. Angabe in Punkt wie im PDF (und wie in Word) – am Bildschirm entsprechend größer.', fontSizeControl(app)),
+      row('Größe neuer Bilder', 'Gilt für das erste Bild in einem Eintrag. Jedes weitere Bild bekommt automatisch die Größe des Bildes davor – so bleiben alle Bilder gleich groß.', seg([['33.3', 'Klein'], ['50', 'Mittel'], ['75', 'Groß'], ['100', 'Ganze Breite']], String(s.imageWidth || 100), (v) => { save({ imageWidth: Number(v) }); if (app.editor) app.editor.settings = app.settings; })),
       row('Überschriften farbig', 'Dunkelblaue Überschriften wie in deiner Vorlage.', sw(s.headingColor, (v) => { save({ headingColor: v }); app.refreshEditorSettings(); })),
       row('Typografie beim Tippen', '-> wird →, "…" wird „…“, ... wird …', sw(s.typography !== false, (v) => save({ typography: v }))),
       row('„&“ im Text ausrichten', '„&“ setzt einen farbigen Ausrichtungspunkt (Zahl danach = ID). Zweimal „&“ ergibt ein normales &.', sw(s.textAlignMarks !== false, (v) => save({ textAlignMarks: v })))

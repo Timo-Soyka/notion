@@ -6,16 +6,17 @@
 // Formeln in Notion, nur ohne schwebendes Fenster, damit auch mehrzeilige
 // Umformungen bequem zu bearbeiten sind.
 
-import { h, esc, popover } from '../../ui/ui.js';
+import { h, esc, popover, menu } from '../../ui/ui.js';
 import { icon } from '../../ui/icons.js';
 import { renderDisplay, renderToString } from '../render/katex.js';
 import { createField, GERMAN_SHORTCUTS } from '../mathfield.js';
 import { widthDialog } from '../widthdialog.js';
 import { flexFor, fromPx, ratioOf, widthKind, formatWidth } from '../../core/widths.js';
 import { latexToLines, linesToLatex, cleanFieldLatex, needsSource, repairLatex, MARK_COLORS } from '../../core/mathlines.js';
-import { assetURL, uuidFromLink } from '../../bridge.js';
+import { assetURL, assetVersion, uuidFromLink } from '../../bridge.js';
 import { htmlToSegs, segsToHTML, normalizeHTML } from '../../core/inline.js';
 import { balanceEquation, checkEquation } from '../../core/chem.js';
+import { SIZE_PRESETS, snapWidth, roundWidth, widthOf, formatPct, otherWidths, sameContextImages } from '../../core/imagesize.js';
 
 // ---------------------------------------------------------------------------
 // Hilfen
@@ -546,26 +547,29 @@ export const image = {
         e.preventDefault();
         if (ed.readonly) return;
         const res = await ed.host.pickFiles('image');
-        if (res && res[0]) { ed.checkpoint(); b.src = res[0].link; b.caption = b.caption || ''; ed.rerender(b); ed.changed(); }
+        if (res && res[0]) { ed.checkpoint(); b.src = res[0].link; b.caption = b.caption || ''; ed.rerender(b); ed.sizeNewImages([b]); ed.changed(); }
       });
       main.append(h('div', { class: 'img-wrap' }, ph));
       return;
     }
     const wrap = h('div', { class: 'img-wrap' });
     const frame = h('div', { class: 'img-frame loading' });
-    frame.style.width = (b.width || 100) + '%';
+    frame.style.width = widthOf(b) + '%';
     const img = h('img', { src: assetURL(b.src), alt: b.caption ? b.caption.replace(/<[^>]+>/g, '') : '', draggable: 'false' });
+    img.dataset.src = b.src;
     img.addEventListener('load', () => frame.classList.remove('loading'));
     img.addEventListener('error', () => { frame.classList.remove('loading'); frame.classList.add('broken'); });
     frame.append(img);
     if (!ed.readonly) {
       for (const side of ['l', 'r']) {
-        const hd = h('div', { class: 'img-handle ' + side });
+        const hd = h('div', { class: 'img-handle ' + side, 'data-tip': 'Ziehen: Größe ändern (rastet ein) · mit ⌥ stufenlos · Doppelklick: ganze Breite' });
         hd.addEventListener('mousedown', (e) => startResize(e, ed, b, frame, wrap, side));
+        hd.addEventListener('dblclick', (e) => { e.stopPropagation(); setImageWidth(ed, [b], 100); });
         frame.append(hd);
       }
       frame.append(mediaBar(ed, b, [
-        ...(ed.host.editImage ? [{ label: 'Bearbeiten', onClick: () => ed.host.editImage(b.src) }] : []),
+        ...(ed.host.editImage ? [{ label: 'Bearbeiten', onClick: () => ed.host.editImage(b.src, b.id) }] : []),
+        { label: formatPct(widthOf(b)), tip: 'Größe', onClick: (btn) => menu(btn, imageSizeItems(ed, b)) },
         { label: 'Beschriftung', onClick: () => { const c = wrap.querySelector('.caption'); if (c) c.focus(); else { b.caption = b.caption || ''; b._cap = true; ed.rerender(b); requestAnimationFrame(() => ed.elOf(b).querySelector('.caption')?.focus()); } } },
         { icon: 'alignLeft', tip: 'Links', onClick: () => setAlign(ed, b, 'left') },
         { icon: 'alignCenter', tip: 'Mitte', onClick: () => setAlign(ed, b, null) },
@@ -581,7 +585,7 @@ export const image = {
       // Doppelklick öffnet den Bildeditor (Textfelder, Pfeile, Zuschneiden …)
       frame.addEventListener('dblclick', (e) => {
         if (e.target.closest('.media-bar, .img-handle') || !ed.host.editImage) return;
-        ed.host.editImage(b.src);
+        ed.host.editImage(b.src, b.id);
       });
     }
     wrap.append(frame);
@@ -609,29 +613,82 @@ function mediaBar(ed, b, buttons) {
   return bar;
 }
 
+// Größe per Ziehen: rastet auf 25, 33, 50, 66, 75 und 100 % ein und auf die
+// Breiten der anderen Bilder im Eintrag – mit gedrückter ⌥-Taste stufenlos
 function startResize(e, ed, b, frame, wrap, side) {
   e.preventDefault();
   e.stopPropagation();
   ed.checkpoint();
   const startX = e.clientX;
   const startW = frame.getBoundingClientRect().width;
-  const total = wrap.getBoundingClientRect().width;
+  const total = wrap.getBoundingClientRect().width || 1;
   const centered = !b.align || b.align === 'center';
+  const others = otherWidths(ed.doc.blocks, b);
+  // Einrasten in einem Bereich von etwa 10 Pixeln (bei zentrierten Bildern bewegt sich jede Seite halb so weit)
+  const threshold = (10 / total) * 100 * (centered ? 2 : 1);
+  const label = h('div', { class: 'img-size-label' });
+  frame.append(label);
+  frame.classList.add('resizing');
+  const show = (w, snap) => {
+    label.textContent = formatPct(w) + (snap === 'other' ? ' · wie anderes Bild' : '');
+    label.classList.toggle('snapped', !!snap);
+  };
+  show(widthOf(b), null);
   const move = (ev) => {
     let dx = ev.clientX - startX;
     if (side === 'l') dx = -dx;
     if (centered) dx *= 2;
-    const pct = Math.max(10, Math.min(100, Math.round(((startW + dx) / total) * 100)));
-    frame.style.width = pct + '%';
-    b.width = pct;
+    const { width, snap } = snapWidth(((startW + dx) / total) * 100, { others, threshold, free: ev.altKey });
+    frame.style.width = width + '%';
+    if (width >= 100) delete b.width; else b.width = width;
+    show(width, snap);
   };
   const up = () => {
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
+    label.remove();
+    frame.classList.remove('resizing');
+    ed.rerender(b, { keepFocus: false });
+    ed.selectBlocks([b]);
     ed.changed();
   };
   window.addEventListener('mousemove', move);
   window.addEventListener('mouseup', up);
+}
+
+export const imageSizeLabel = (b) => formatPct(widthOf(b));
+
+export function setImageWidth(ed, list, w) {
+  ed.checkpoint();
+  const v = roundWidth(w);
+  for (const x of list) {
+    if (v >= 100) delete x.width; else x.width = v;
+    ed.rerender(x, { keepFocus: false });
+  }
+  ed.selectBlocks(list.length === 1 ? list : [list[0]].filter(Boolean));
+  ed.changed();
+}
+
+// Menü „Größe“ (Bildleiste und Blockmenü)
+export function imageSizeItems(ed, b) {
+  const cur = roundWidth(widthOf(b));
+  const same = (w) => Math.abs(w - cur) < 0.05;
+  const items = SIZE_PRESETS.map(p => ({ label: p.label, hint: formatPct(p.width), checked: same(p.width), onSelect: () => setImageWidth(ed, [b], p.width) }));
+  // Größen, die andere Bilder im Eintrag schon haben
+  const others = otherWidths(ed.doc.blocks, b).filter(w => !SIZE_PRESETS.some(p => Math.abs(p.width - w) < 0.05));
+  for (const w of others) items.push({ label: 'Wie anderes Bild', hint: formatPct(w), checked: same(w), onSelect: () => setImageWidth(ed, [b], w) });
+  items.push({ label: 'Eigene Größe …', hint: SIZE_PRESETS.some(p => same(p.width)) || others.some(same) ? '' : formatPct(cur), onSelect: async () => {
+    const v = await ed.ui.prompt('Breite des Bildes', String(cur).replace('.', ','), { placeholder: 'in Prozent der Spalte, z. B. 40', description: 'In Prozent der Spaltenbreite (10 bis 100).' });
+    if (v === null) return;
+    const n = parseFloat(String(v).replace(',', '.').replace('%', ''));
+    if (Number.isFinite(n)) setImageWidth(ed, [b], n);
+  } });
+  const group = sameContextImages(ed.doc.blocks, b);
+  if (group.length > 1) {
+    const differs = group.some(x => Math.abs(roundWidth(widthOf(x)) - cur) >= 0.05);
+    items.push('-', { label: `Alle Bilder auf ${formatPct(cur)}`, icon: 'image', disabled: !differs, hint: differs ? `${group.length} Bilder` : 'schon gleich', onSelect: () => setImageWidth(ed, group, cur) });
+  }
+  return items;
 }
 
 // ---------------------------------------------------------------------------
@@ -671,7 +728,7 @@ export const pdf = {
     const head = h('div', { class: 'pdf-embed-head' }, h('span', { html: icon('pdf') }), title);
     if (!ed.readonly) {
       const openBtn = h('button', { class: 'btn sm outline' }, icon('pencil', 'sm'), 'Bearbeiten');
-      openBtn.addEventListener('click', () => ed.host.openPDF(uuid));
+      openBtn.addEventListener('click', () => ed.host.openPDF(uuid, b.id));
       const pagesBtn = h('button', { class: 'btn sm' }, b.pages ? `Seiten ${b.pages}` : 'Alle Seiten');
       pagesBtn.addEventListener('click', async () => {
         const v = await ed.ui.prompt('Welche Seiten sollen angezeigt werden?', b.pages || '', { placeholder: 'z. B. 1-2 oder 1,3 (leer = alle)' });
@@ -686,6 +743,7 @@ export const pdf = {
       head.append(pagesBtn, openBtn, more);
     }
     const pages = h('div', { class: 'pdf-pages' });
+    pages.dataset.v = assetVersion(uuid);
     box.append(head, pages);
     main.append(box);
     const width = Math.round(Math.min(1800, (main.clientWidth || 700) * (window.devicePixelRatio || 2)));
@@ -703,7 +761,7 @@ export const pdf = {
       e.preventDefault();
       ed.selectBlocks([b]);
     });
-    box.addEventListener('dblclick', () => ed.host.openPDF(uuid));
+    box.addEventListener('dblclick', () => ed.host.openPDF(uuid, b.id));
   }
 };
 

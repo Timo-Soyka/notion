@@ -8,7 +8,7 @@
 
 import { h, menu, toast, confirmDialog } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { call, imageURL } from '../bridge.js';
+import { call, imageURL, touchAsset } from '../bridge.js';
 import * as M from '../core/imagemodel.js';
 
 const COLORS = [
@@ -850,6 +850,7 @@ export class ImageEditor {
     this.dirtyPages.clear();
     try {
       const ok = await call('image.revert', { uuid: this.uuid });
+      touchAsset(this.uuid);
       if (!ok) this.doc = { v: 1, pages: {} };
       this.images = [];
       this.hist = {};
@@ -942,7 +943,12 @@ export class ImageEditor {
     const parent = this.app.lib.parentOf(this.uuid);
     const r = await call('image.copy', { uuid: this.uuid, parent: parent ? parent.uuid : this.app.lib.root.uuid });
     if (!r || !r.uuid) throw new Error('Kopie konnte nicht angelegt werden');
+    const from = this.uuid;
     this.uuid = r.uuid;
+    // Aus einem Eintrag heraus geöffnet: der Eintrag zeigt ab jetzt die Kopie
+    const cur = this.app.current;
+    const relinked = cur && cur.back ? await this.app.relinkImage(cur.back, from, r.uuid) : false;
+    if (cur && cur.backAt && cur.backAt.uuid === from) cur.backAt = { ...cur.backAt, uuid: r.uuid };
     this.writable = true;
     this.banner.style.display = 'none';
     this.app.current.uuid = r.uuid;
@@ -950,7 +956,7 @@ export class ImageEditor {
     await this.app.lib.refresh();
     this.app.renderTopbar();
     this.app.sidebar.reveal(r.uuid);
-    toast(`Bearbeitet wird die Kopie „${r.name}“`, { type: 'success' });
+    toast(`Bearbeitet wird die Kopie „${r.name}“` + (relinked ? ' – der Eintrag zeigt ab jetzt die Kopie' : ''), { type: 'success' });
     return true;
   }
 
@@ -966,6 +972,7 @@ export class ImageEditor {
         // Alle Seiten mit Änderungen mitschicken – die Mac-App setzt jedes Mal neu aus dem Original zusammen
         const pages = Object.keys(this.doc.pages).filter(i => !M.isEmptyLayer(this.doc.pages[i])).map(i => this.exportPage(i));
         await call('image.save', { uuid: this.uuid, pages, layer: this.doc });
+        touchAsset(this.uuid);
         this.info.base = 'original';
         if (!this.closed) this.app.setSaveState(this.dirtyPages.size ? 'dirty' : 'saved');
       } catch (e) {

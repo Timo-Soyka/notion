@@ -40,8 +40,10 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
             let parts = Array(url.pathComponents.dropFirst())
             let uuid = parts.first ?? ""
             let page = Int(parts.dropFirst().first ?? "1") ?? 1
-            let width = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "w" })?.value.flatMap(Int.init) ?? 1400
-            work.async { self.servePDFPage(uuid, page, width, task) }
+            let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let width = q.first(where: { $0.name == "w" })?.value.flatMap(Int.init) ?? 1400
+            let version = q.first(where: { $0.name == "v" })?.value ?? ""
+            work.async { self.servePDFPage(uuid, page, width, version, task) }
         case "image":
             let uuid = url.pathComponents.dropFirst().first ?? ""
             let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -130,8 +132,20 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
         return doc
     }
 
-    private func servePDFPage(_ uuid: String, _ page: Int, _ width: Int, _ task: WKURLSchemeTask) {
-        let key = "\(uuid)/\(page)/\(width)" as NSString
+    // Neue Versionsnummer (Datei geändert, auch außerhalb von Heft) → PDF neu einlesen
+    private var versions: [String: String] = [:]
+    private func checkVersion(_ uuid: String, _ version: String) {
+        guard !version.isEmpty else { return }
+        lock.lock()
+        let old = versions[uuid]
+        versions[uuid] = version
+        lock.unlock()
+        if let old = old, old != version { docCache.removeObject(forKey: uuid as NSString) }
+    }
+
+    private func servePDFPage(_ uuid: String, _ page: Int, _ width: Int, _ version: String, _ task: WKURLSchemeTask) {
+        checkVersion(uuid, version)
+        let key = "\(uuid)/\(page)/\(width)/\(version)" as NSString
         if let cached = pageCache.object(forKey: key) { finish(task, data: cached as Data, mime: "image/png"); return }
         do {
             let doc = try document(for: uuid)

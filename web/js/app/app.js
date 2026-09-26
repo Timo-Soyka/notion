@@ -4,7 +4,7 @@
 
 import { h, esc, menu, toast, confirmDialog, promptDialog, initTooltips, debounce, formatDate, relativeTime, todayISO, mod } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { call, on, isNative, uuidFromLink, itemLink } from '../bridge.js';
+import { call, on, isNative, uuidFromLink, itemLink, touchAsset } from '../bridge.js';
 import { parseDocument, serializeDocument, block } from '../core/markdown.js';
 import { Editor } from '../editor/editor.js';
 import { Library } from './library.js';
@@ -149,6 +149,10 @@ export class App {
     on('app-active', () => { this.lib.refresh(); this.checkDT(); this.reloadIfChanged(); });
     on('tree-changed', () => this.sidebar.renderTree());
     on('toast', ({ message, type }) => toast(message, { type }));
+    // Arbeitsblatt im PDF-Editor gespeichert → eingebettete Seiten neu laden
+    on('pdf-state', (st) => { if (st && st.saved && st.uuid) touchAsset(st.uuid); });
+    // Bild oder PDF außerhalb geändert (DEVONthink, Vorschau …) → im offenen Eintrag neu laden
+    this.lib.onChange(() => { if (this.editor && this.lib.changedFiles && this.lib.changedFiles.length) this.editor.refreshAssets(); });
   }
 
   command(cmd) {
@@ -224,17 +228,14 @@ export class App {
       more.addEventListener('click', () => this.noteMenu(more));
       actions.append(pdfBtn, more);
     } else if (cur && cur.kind === 'file') {
-      if (cur.back) {
-        const back = h('button', { class: 'btn', html: icon('chevronLeft', 'sm') + 'Zurück zum Eintrag' });
-        back.addEventListener('click', () => this.openRecord(cur.back));
-        actions.append(back);
-      }
+      if (cur.back) actions.append(this.backButton(cur));
       const ow = h('button', { class: 'btn', 'data-tip': 'In einem anderen Programm bearbeiten', html: icon('external', 'sm') + 'Öffnen mit' + icon('chevronDown', 'sm') });
       ow.addEventListener('click', () => this.openWithMenu(ow, cur.uuid));
       const dt = h('button', { class: 'btn icon-only', 'data-tip': 'In DEVONthink zeigen', html: icon('database') });
       dt.addEventListener('click', () => call('record.reveal', { uuid: cur.uuid }));
       actions.append(ow, dt);
     } else if (cur && cur.kind === 'pdf') {
+      if (cur.back) actions.append(this.backButton(cur));
       const dt = h('button', { class: 'btn', html: icon('database', 'sm') + 'In DEVONthink' });
       dt.addEventListener('click', () => call('record.reveal', { uuid: cur.uuid }));
       actions.append(dt);
@@ -408,7 +409,7 @@ export class App {
     if (this.current && this.current.kind === 'file' && this.current.uuid === uuid && this.fileView) return;
     await this.leaveNote();
     const e = this.lib.index.get(uuid);
-    this.current = { kind: 'file', uuid, name: e ? e.node.name : 'Datei', back: opts.back || null };
+    this.current = { kind: 'file', uuid, name: e ? e.node.name : 'Datei', back: opts.back || null, backAt: opts.backAt || null };
     localStorage.setItem('heft-last', uuid);
     this.addRecent(uuid);
     this.renderTopbar();
@@ -458,16 +459,46 @@ export class App {
     if (focusTitle) setTimeout(() => this.editor.titleEl && this.editor.titleEl.focus(), 30);
   }
 
-  async openPDF(uuid) {
+  async openPDF(uuid, opts = {}) {
     await this.leaveNote();
     const e = this.lib.index.get(uuid);
-    this.current = { kind: 'pdf', uuid, name: e ? e.node.name : 'PDF' };
+    this.current = { kind: 'pdf', uuid, name: e ? e.node.name : 'PDF', back: opts.back || null, backAt: opts.backAt || null };
     localStorage.setItem('heft-last', uuid);
     this.addRecent(uuid);
     this.renderTopbar();
     this.sidebar.reveal(uuid);
     this.pdfView = new PDFView(this, uuid, e && e.node);
     await this.pdfView.mount(this.view);
+  }
+
+  // „Zurück zum Eintrag“ – zu dem Bild bzw. Arbeitsblatt, das bearbeitet wurde
+  backButton(cur) {
+    const b = h('button', { class: 'btn', html: icon('chevronLeft', 'sm') + 'Zurück zum Eintrag' });
+    b.addEventListener('click', () => this.goBack(cur));
+    return b;
+  }
+
+  async goBack(cur) {
+    const { back, backAt } = cur;
+    await this.openRecord(back);
+    if (backAt && this.editor && this.current && this.current.uuid === back) this.editor.revealAsset(backAt);
+  }
+
+  // Bild ließ sich nicht direkt bearbeiten, es wurde eine PNG-Kopie angelegt:
+  // Der Eintrag, aus dem es geöffnet wurde, zeigt ab jetzt die Kopie
+  async relinkImage(noteUuid, from, to) {
+    try {
+      const res = await call('note.read', { uuid: noteUuid });
+      // nur Bilder (![…](…)), keine Verweise im Text
+      const re = new RegExp(`(!\\[[^\\]\\n]*\\]\\(<?)x-devonthink-item://${from}(?=[)>\\s?#])`, 'gi');
+      const markdown = String(res.markdown || '').replace(re, `$1x-devonthink-item://${to}`);
+      if (markdown === res.markdown) return false;
+      await call('note.write', { uuid: noteUuid, markdown, name: res.name, tags: null });
+      return true;
+    } catch (e) {
+      toast('Eintrag konnte nicht auf die Kopie umgestellt werden: ' + e.message, { type: 'error' });
+      return false;
+    }
   }
 
   onTitleChange(title) {
@@ -778,13 +809,19 @@ export class App {
         }
         call('open.url', { url: href });
       },
-      openPDF: (uuid) => app.openPDF(uuid),
-      editImage: async (src) => {
+      openPDF: async (uuid, blockId) => {
+        const back = app.current && app.current.kind === 'note' ? app.current.uuid : null;
+        const backAt = back && blockId && app.editor ? app.editor.assetPosition(blockId) : null;
+        await app.saveNow();
+        app.openPDF(uuid, { back, backAt });
+      },
+      editImage: async (src, blockId) => {
         const u = uuidFromLink(src);
         if (!u) return;
         const back = app.current && app.current.kind === 'note' ? app.current.uuid : null;
+        const backAt = back && blockId && app.editor ? app.editor.assetPosition(blockId) : null;
         await app.saveNow();
-        app.openFile(u, { back });
+        app.openFile(u, { back, backAt });
       },
       revealLink: (href) => { const u = uuidFromLink(href); if (u) call('record.reveal', { uuid: u }); },
       pickFiles: async (kind) => {
