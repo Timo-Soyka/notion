@@ -1,0 +1,25 @@
+HEFT – Installation
+===================
+
+Voraussetzungen
+  • Mac mit Apple-Chip (M1 oder neuer)
+  • macOS 14 Sonoma oder neuer
+  • DEVONthink 4
+
+Einfachster Weg
+  Doppelklick auf „Heft installieren.command“.
+  Das kopiert Heft nach „Programme“, gibt die App frei und startet sie.
+
+  Falls macOS das Skript beim ersten Mal blockiert:
+  Systemeinstellungen → Datenschutz & Sicherheit → ganz unten
+  „Trotzdem öffnen“ klicken und noch einmal doppelklicken.
+
+Von Hand
+  1. „Heft“ auf den Ordner „Programme“ ziehen.
+  2. Heft öffnen. Kommt die Meldung „Entwickler kann nicht überprüft werden“:
+     Systemeinstellungen → Datenschutz & Sicherheit → „Trotzdem öffnen“.
+
+Erster Start
+  • Heft fragt nach der DEVONthink-Datenbank, in der deine Einträge liegen.
+  • Beim ersten Speichern fragt macOS, ob Heft DEVONthink steuern darf –
+    mit „Erlauben“ bestätigen.

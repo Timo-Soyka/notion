@@ -1,0 +1,37 @@
+/* Druck- und PDF-Ansicht */
+
+body.print-mode, body.print-mode #root { overflow: visible; height: auto; background: #fff; }
+body.print-mode { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.doc.print { padding: 0; max-width: none; margin: 0; --pad-x: 0px; }
+.doc.print .doc-header { margin-bottom: 22px; }
+.doc.print.title-centered .doc-title-row { justify-content: center; text-align: center; }
+.doc.print.title-centered .doc-title { flex: 0 1 auto; }
+.doc.print.title-centered .doc-props { justify-content: center; }
+.doc.print .doc-title { font-size: 26px; }
+.doc.print .doc-number { font-size: 26px; color: var(--fg-strong); }
+.doc.print .doc-props { margin-top: 6px; font-size: 13px; color: var(--muted); font-family: var(--doc-font); }
+.doc.print .doc-header-tools, .doc.print .blk-handle, .doc.print .doc-end, .doc.print .media-bar,
+.doc.print .table-add, .doc.print .code-head, .doc.print .callout-fold, .doc.print .toggle-empty { display: none !important; }
+.doc.print .atom-view:hover, .doc.print .im:hover { background: transparent; }
+.doc.print .blk-text[data-ph]:empty::before { content: none; }
+.doc.print .blk[data-type="pagebreak"] { break-after: page; page-break-after: always; height: 0; margin: 0; }
+.doc.print .blk[data-type="pagebreak"] > .blk-main { display: none; }
+.doc.print .blk[data-type="callout"], .doc.print .math-view, .doc.print .plot-wrap, .doc.print .img-wrap,
+.doc.print .smiles-wrap, .doc.print .code-wrap, .doc.print .htable tr, .doc.print .pdf-pages img, .doc.print .blk[data-type="quote"] {
+  break-inside: avoid; page-break-inside: avoid;
+}
+.doc.print .blk[data-type^="h"] { break-after: avoid; page-break-after: avoid; }
+/* Aufgaben nicht zerreißen: Nummer + eingerückte Rechnung bzw. zusammengehörige Blöcke */
+.doc.print .blk[data-type="p"]:has(> .blk-children > .blk),
+.doc.print .keep-together { break-inside: avoid; page-break-inside: avoid; }
+.doc.print .blk[data-type="math"] { break-inside: avoid; page-break-inside: avoid; }
+.doc.print .toggle-btn .icon { transform: rotate(90deg); }
+.doc.print .pdf-embed { border: 0; background: transparent; }
+.doc.print .pdf-embed-head { display: none; }
+.doc.print .pdf-pages { padding: 0; gap: 12px; }
+.doc.print .pdf-pages img { box-shadow: 0 0 0 1px #ddd; }
+.doc.print .doc-footnotes { margin-top: 28px; }
+.doc.print a { text-decoration-color: currentColor; }
+.doc.print a.note-link::before { content: none; }
+
+.doc.print .table-wrap { overflow: visible; padding-bottom: 4px; }
