@@ -5,9 +5,11 @@
 // (b.num bzw. b.start); alles danach zählt von dort aus weiter – so wie man
 // es im Heft macht, wenn die Nummerierung vom Standard abweicht.
 
+import { leadNumber, topicChain, nextSlot, joinNumber } from './filing.js';
+
 export const HEADING_STYLES = [['', 'Aus'], ['1.1', '1.1'], ['1.', '1.1.'], ['I.1', 'I.1'], ['A.1', 'A.1']];
 export const LIST_STYLES = [['1.', '1.'], ['1)', '1)'], ['a)', 'a)']];
-export const ENTRY_FORMATS = [['off', 'Aus'], ['1', '1, 2, 3'], ['chapter', '1.1, 1.2'], ['01', '01, 02']];
+export const ENTRY_FORMATS = [['off', 'Aus'], ['1', '1, 2, 3'], ['chapter', 'nach Thema: 1.1.2'], ['01', '01, 02']];
 
 export function roman(n) {
   if (!(n > 0) || n > 3999) return String(n);
@@ -74,24 +76,18 @@ export function listLabel(n, depth, style = '1.', nested = true) {
   }
 }
 
-// Nächste Eintragsnummer im Ordner ("1 Quadratzahlen", "2 Wurzeln" → "3")
-export function nextEntryNumber(siblingNames, folderName, format) {
+// Nächste Eintragsnummer im Ordner ("1 Quadratzahlen", "2 Wurzeln" → "3").
+// Bei „chapter“ ist `folder` die Themennummer (oder der Ordnername) und
+// die Nummer nimmt den nächsten freien Platz im Thema: 1.1 → 1.1.2.
+export function nextEntryNumber(siblingNames, folder, format) {
   if (!format || format === 'off') return '';
-  const lead = (s) => { const m = /^\s*(\d+(?:\.\d+)*)[\s.)_-]/.exec(String(s || '') + ' '); return m ? m[1] : null; };
   if (format === 'chapter') {
-    const chapter = lead(folderName);
-    if (chapter) {
-      let max = 0;
-      for (const n of siblingNames) {
-        const l = lead(n);
-        if (l && l.startsWith(chapter + '.')) max = Math.max(max, parseInt(l.slice(chapter.length + 1), 10) || 0);
-      }
-      return `${chapter}.${max + 1}`;
-    }
+    const chain = topicChain([folder]);
+    return joinNumber(chain, nextSlot(siblingNames, chain));
   }
   let max = 0;
   for (const n of siblingNames) {
-    const l = lead(n);
+    const l = leadNumber(n);
     if (l) max = Math.max(max, parseInt(l.split('.').pop(), 10) || 0);
   }
   const next = max + 1;

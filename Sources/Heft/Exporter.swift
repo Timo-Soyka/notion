@@ -61,8 +61,11 @@ final class Exporter: NSObject, WKNavigationDelegate {
     private func start() {
         let paper = Self.paperSize()
         let m = Self.margins()
-        // Breite in CSS-Pixeln (96 dpi) = druckbare Breite in Punkten (72 dpi) × 4/3
-        let cssWidth = (paper.width - m.left - m.right) * 96 / 72
+        // WebKit setzt die Seite beim Drucken mit der druckbaren Breite in Punkten
+        // × 1,25 (sein fester Verkleinerungsfaktor). Genau so breit wird hier
+        // vorbereitet – sonst bricht der Text beim Drucken anders um, und alles,
+        // was vorher vermessen wurde (Tabellen, Ausrichtung, Zeilennummern), verrutscht.
+        let cssWidth = (paper.width - m.left - m.right) * 1.25
         let cfg = WKWebViewConfiguration()
         cfg.setURLSchemeHandler(SchemeHandler.shared, forURLScheme: "heft")
         bridge = Bridge(printCallback: { [weak self] meta in self?.ready(meta) })
@@ -184,6 +187,28 @@ final class Exporter: NSObject, WKNavigationDelegate {
         ]
         guard let ctx = CGContext(consumer: consumer, mediaBox: &first, info as CFDictionary) else { return pdf }
         let total = doc.pageCount
+        // Links der Druckfassung einsammeln: Adressen (DEVONthink, Web) und Sprünge im Dokument.
+        // Sie werden beim Neuzeichnen direkt ins PDF geschrieben – kopierte PDFKit-Anmerkungen
+        // verlieren ihr Ziel.
+        var urlLinks: [Int: [(CGRect, URL)]] = [:]
+        var jumpLinks: [Int: [(CGRect, String)]] = [:]
+        var targets: [Int: [String: CGPoint]] = [:]
+        for i in 0..<total {
+            guard let page = doc.page(at: i) else { continue }
+            for ann in page.annotations where ann.type == "Link" {
+                if let url = ann.url ?? (ann.action as? PDFActionURL)?.url {
+                    urlLinks[i, default: []].append((ann.bounds, url))
+                } else if let dest = (ann.action as? PDFActionGoTo)?.destination ?? ann.destination, let tp = dest.page {
+                    let idx = doc.index(for: tp)
+                    guard idx != NSNotFound else { continue }
+                    let top = tp.bounds(for: .mediaBox).maxY
+                    let y = dest.point.y.isFinite && dest.point.y < 1e6 ? min(dest.point.y + 6, top) : top
+                    let name = "ziel-\(idx)-\(Int(y))"
+                    targets[idx, default: [:]][name] = CGPoint(x: 0, y: y)
+                    jumpLinks[i, default: []].append((ann.bounds, name))
+                }
+            }
+        }
         let font: NSFont = meta.font == "mono" ? NSFont.monospacedSystemFont(ofSize: 9.5, weight: .regular)
             : meta.font == "serif" ? (NSFont(name: "NewYork-Regular", size: 9.5) ?? NSFont.systemFont(ofSize: 9.5))
             : NSFont.systemFont(ofSize: 9.5)
@@ -194,6 +219,9 @@ final class Exporter: NSObject, WKNavigationDelegate {
             let boxData = Data(bytes: &box, count: MemoryLayout<CGRect>.size) as CFData
             ctx.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)
             page.draw(with: .mediaBox, to: ctx)
+            for (name, point) in targets[i] ?? [:] { ctx.addDestination(name as CFString, at: point) }
+            for (rect, url) in urlLinks[i] ?? [] { ctx.setURL(url as CFURL, for: rect) }
+            for (rect, name) in jumpLinks[i] ?? [] { ctx.setDestination(name as CFString, for: rect) }
             let gc = NSGraphicsContext(cgContext: ctx, flipped: false)
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = gc
@@ -227,20 +255,6 @@ final class Exporter: NSObject, WKNavigationDelegate {
             ctx.endPDFPage()
         }
         ctx.closePDF()
-        // Links aus dem Original übernehmen (beim Neuzeichnen gehen sie verloren)
-        guard let result = PDFDocument(data: out as Data) else { return out as Data }
-        for i in 0..<min(total, result.pageCount) {
-            guard let src = doc.page(at: i), let dst = result.page(at: i) else { continue }
-            for ann in src.annotations where ann.type == "Link" {
-                if let copy = ann.copy() as? PDFAnnotation { dst.addAnnotation(copy) }
-            }
-        }
-        result.documentAttributes = [
-            PDFDocumentAttribute.titleAttribute: meta.title,
-            PDFDocumentAttribute.authorAttribute: meta.name,
-            PDFDocumentAttribute.subjectAttribute: meta.subject,
-            PDFDocumentAttribute.creatorAttribute: "Heft"
-        ]
-        return result.dataRepresentation() ?? (out as Data)
+        return out as Data
     }
 }

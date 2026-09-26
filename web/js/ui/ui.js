@@ -168,7 +168,7 @@ export function menu(anchor, items, opts = {}) {
 // Dialoge
 // ---------------------------------------------------------------------------
 
-export function dialog({ title, description, body, actions = [], class: cls = '', onClose, center = false, dismissable = true }) {
+export function dialog({ title, description, body, actions = [], class: cls = '', onClose, onEscape, center = false, dismissable = true }) {
   const overlay = h('div', { class: 'overlay' + (center ? ' center' : '') });
   const box = h('div', { class: 'dialog ' + cls, role: 'dialog' });
   if (title || description) {
@@ -204,6 +204,8 @@ export function dialog({ title, description, body, actions = [], class: cls = ''
   const onKey = (e) => {
     if (e.key === 'Escape' && dismissable) {
       if (document.querySelector('.popover')) return;
+      // Der Dialog kann Escape selbst verwenden (z. B. um ein Eingabefeld zu schließen)
+      if (onEscape && onEscape() === true) { e.preventDefault(); e.stopPropagation(); return; }
       e.preventDefault();
       api.close(null);
     }

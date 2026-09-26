@@ -10,9 +10,14 @@ import { Editor } from '../editor/editor.js';
 import { Library } from './library.js';
 import { Sidebar } from './sidebar.js';
 import { openPalette } from './palette.js';
-import { openSettings, renderOnboarding, renderDatabasePicker, withDefaults } from './settings.js';
+import { defaultFontPt, openSettings, renderOnboarding, renderDatabasePicker, withDefaults } from './settings.js';
 import { PDFView } from './pdfview.js';
 import { HEADING_STYLES, LIST_STYLES, nextEntryNumber } from '../core/numbering.js';
+import { topicChain } from '../core/filing.js';
+import { filingDialog } from './filing.js';
+import { FileView } from './fileview.js';
+import { pickDocument } from './linkpicker.js';
+import { iconFor } from '../core/filetypes.js';
 
 export class App {
   constructor(root) {
@@ -22,6 +27,7 @@ export class App {
     this.current = null;
     this.editor = null;
     this.pdfView = null;
+    this.fileView = null;
     this.dirty = false;
     this.saving = null;
     this.selectedGroup = null;
@@ -77,7 +83,7 @@ export class App {
     catch (e) { toast('Bibliothek konnte nicht geladen werden: ' + e.message, { type: 'error' }); }
     const lastNode = last && this.lib.index.get(last);
     if (lastNode) {
-      if (lastNode.node.kind === 'pdf') this.openPDF(last); else this.openNote(last);
+      this.openRecord(last);
     } else this.showHome();
     this.layoutChanged();
   }
@@ -163,7 +169,7 @@ export class App {
         const a = document.activeElement;
         if (a && a.tagName === 'MATH-FIELD') { a.executeCommand(cmd); return; }
         if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { document.execCommand(cmd); return; }
-        if (ed) cmd === 'undo' ? ed.undo() : ed.redo(); else if (this.pdfView) this.pdfView.action(cmd);
+        if (ed) cmd === 'undo' ? ed.undo() : ed.redo(); else if (this.pdfView) this.pdfView.action(cmd); else if (this.fileView) this.fileView[cmd]();
         return;
       }
       case 'home': return this.showHome();
@@ -188,7 +194,7 @@ export class App {
     const crumbs = h('div', { class: 'crumbs' });
     tb.append(crumbs);
     const cur = this.current;
-    if (cur && (cur.kind === 'note' || cur.kind === 'pdf')) {
+    if (cur && (cur.kind === 'note' || cur.kind === 'pdf' || cur.kind === 'file')) {
       const node = this.lib.index.get(cur.uuid);
       const chain = node ? this.lib.ancestors(cur.uuid) : [];
       const parent = node && node.parent;
@@ -201,7 +207,8 @@ export class App {
         c.addEventListener('click', () => { this.sidebar.expanded.add(g.uuid); this.sidebar.saveExpanded(); this.sidebar.reveal(g.uuid); });
         crumbs.append(c, h('span', { class: 'crumb-sep', text: '/' }));
       }
-      const titleCrumb = h('span', { class: 'crumb', html: icon(cur.kind === 'pdf' ? 'pdf' : 'note', 'sm') + `<span class="t">${esc(cur.name || 'Unbenannt')}</span>` });
+      const crumbIcon = cur.kind === 'file' ? iconFor((node && node.node) || { kind: 'file', name: cur.name }) : cur.kind === 'pdf' ? 'pdf' : 'note';
+      const titleCrumb = h('span', { class: 'crumb', html: icon(crumbIcon, 'sm') + `<span class="t">${esc(cur.name || 'Unbenannt')}</span>` });
       this.titleCrumb = titleCrumb.querySelector('.t');
       crumbs.append(titleCrumb);
     } else if (cur && cur.kind === 'home') {
@@ -216,6 +223,17 @@ export class App {
       const more = h('button', { class: 'btn icon-only', 'data-tip': 'Mehr', html: icon('more') });
       more.addEventListener('click', () => this.noteMenu(more));
       actions.append(pdfBtn, more);
+    } else if (cur && cur.kind === 'file') {
+      if (cur.back) {
+        const back = h('button', { class: 'btn', html: icon('chevronLeft', 'sm') + 'Zurück zum Eintrag' });
+        back.addEventListener('click', () => this.openRecord(cur.back));
+        actions.append(back);
+      }
+      const ow = h('button', { class: 'btn', 'data-tip': 'In einem anderen Programm bearbeiten', html: icon('external', 'sm') + 'Öffnen mit' + icon('chevronDown', 'sm') });
+      ow.addEventListener('click', () => this.openWithMenu(ow, cur.uuid));
+      const dt = h('button', { class: 'btn icon-only', 'data-tip': 'In DEVONthink zeigen', html: icon('database') });
+      dt.addEventListener('click', () => call('record.reveal', { uuid: cur.uuid }));
+      actions.append(ow, dt);
     } else if (cur && cur.kind === 'pdf') {
       const dt = h('button', { class: 'btn', html: icon('database', 'sm') + 'In DEVONthink' });
       dt.addEventListener('click', () => call('record.reveal', { uuid: cur.uuid }));
@@ -252,8 +270,25 @@ export class App {
     menu(anchor, [
       { section: 'Stil' },
       { custom: h('div', { style: { padding: '0 6px' } }, fontRow) },
-      { label: 'Kleine Schrift', icon: 'type', checked: !!m.smallText, onSelect: () => ed.setMeta({ smallText: !m.smallText || undefined }) },
+      { label: 'Schriftgröße', icon: 'type', submenu: (() => {
+        const std = s.fontSize || defaultFontPt(font);
+        const cur = Number(m.fontSize) || 0;
+        const fmt = (v) => String(v).replace('.', ',') + ' pt';
+        return [
+          { label: `Standard (${fmt(std)})`, checked: !cur && !m.smallText, onSelect: () => ed.setMeta({ fontSize: undefined, smallText: undefined }) },
+          '-',
+          ...[10, 11, 12, 13, 14, 16].map(v => ({ label: fmt(v), checked: cur === v, onSelect: () => ed.setMeta({ fontSize: v, smallText: undefined }) })),
+          '-',
+          { label: 'Standard einstellen …', icon: 'gear', onSelect: () => openSettings(this, 'editor') }
+        ];
+      })() },
       { label: 'Volle Breite', icon: 'columns', checked: !!m.fullWidth, onSelect: () => ed.setMeta({ fullWidth: !m.fullWidth || undefined }) },
+      { label: 'Zeilennummern', icon: 'listOrdered', submenu: [
+        { label: 'Aus', checked: !m.lineNumbers, onSelect: () => ed.setMeta({ lineNumbers: undefined }) },
+        { label: 'Jede Zeile', checked: Number(m.lineNumbers) === 1, onSelect: () => ed.setMeta({ lineNumbers: 1 }) },
+        { label: 'Jede 5. Zeile', checked: Number(m.lineNumbers) === 5, onSelect: () => ed.setMeta({ lineNumbers: 5 }) },
+        { label: 'Jede 10. Zeile', checked: Number(m.lineNumbers) === 10, onSelect: () => ed.setMeta({ lineNumbers: 10 }) }
+      ] },
       { label: 'Nummerierung', icon: 'listOrdered', submenu: (() => {
         const o = ed.numberingOpts();
         const own = ['numbering', 'numberDepth', 'numberPrefix', 'listStyle'].some(k => m[k] !== undefined);
@@ -310,6 +345,7 @@ export class App {
     }
     this.touched = false;
     if (this.pdfView) { this.pdfView.close(); this.pdfView = null; }
+    if (this.fileView) { const fv = this.fileView; this.fileView = null; try { await fv.close(); } catch { /* egal */ } }
     this.view.classList.remove('no-scroll');
   }
 
@@ -340,7 +376,7 @@ export class App {
       const grid = h('div', { class: 'home-grid' });
       for (const e of recent) {
         const n = e.node;
-        const card = h('div', { class: 'home-card' }, h('span', { html: icon(n.kind === 'pdf' ? 'pdf' : 'note') }), h('span', { class: 't', text: n.name }), h('span', { class: 'm', text: e.path || '' }));
+        const card = h('div', { class: 'home-card' }, h('span', { html: icon(iconFor(n)) }), h('span', { class: 't', text: n.name }), h('span', { class: 'm', text: e.path || '' }));
         card.addEventListener('click', () => this.sidebar.activate(n));
         grid.append(card);
       }
@@ -358,11 +394,39 @@ export class App {
     v.append(home);
   }
 
-  async openRecord(uuid) {
+  async openRecord(uuid, opts) {
     const e = this.lib.index.get(uuid);
     if (e && e.node.kind === 'pdf') return this.openPDF(uuid);
     if (e && e.node.kind === 'group') { this.sidebar.reveal(uuid); return; }
+    if (e && e.node.kind === 'bundle') return this.openNote(e.node.note);
+    if (e && e.node.kind !== 'note') return this.openFile(uuid, opts);
     return this.openNote(uuid);
+  }
+
+  // Bilder, Text, Tabellen, Office-Dateien, Audio, Video … (alles außer Einträgen und PDFs)
+  async openFile(uuid, opts = {}) {
+    if (this.current && this.current.kind === 'file' && this.current.uuid === uuid && this.fileView) return;
+    await this.leaveNote();
+    const e = this.lib.index.get(uuid);
+    this.current = { kind: 'file', uuid, name: e ? e.node.name : 'Datei', back: opts.back || null };
+    localStorage.setItem('heft-last', uuid);
+    this.addRecent(uuid);
+    this.renderTopbar();
+    this.sidebar.reveal(uuid);
+    this.setSaveState('saved');
+    this.fileView = new FileView(this, uuid, e && e.node, opts);
+    await this.fileView.mount(this.view);
+    this.renderTopbar();
+  }
+
+  // Menü „Öffnen mit …“ – über DEVONthink, damit Änderungen in der Datenbank ankommen
+  async openWithMenu(anchor, uuid) {
+    let apps = [];
+    try { apps = await call('file.apps', { uuid }); } catch { apps = []; }
+    const items = apps.map(a => ({ label: a.name + (a.default ? ' (Standard)' : ''), icon: 'external', onSelect: () => call('file.openWith', { uuid, app: a.default ? '' : a.name }) }));
+    if (!items.length) items.push({ label: 'Mit Standardprogramm öffnen', icon: 'external', onSelect: () => call('file.openWith', { uuid }) });
+    items.push('-', { label: 'In DEVONthink zeigen', icon: 'database', onSelect: () => call('record.reveal', { uuid }) });
+    menu(anchor, items);
   }
 
   async openNote(uuid, { focusTitle = false } = {}) {
@@ -494,8 +558,7 @@ export class App {
     const subject = this.lib.guessSubject(group, this.settings.subjects || []);
     if (subject) meta.subject = subject;
     // Nächste freie Nummer im Ordner (falls in den Einstellungen eingeschaltet)
-    const folder = group && this.lib.get(group);
-    const number = nextEntryNumber(((folder && folder.children) || []).filter(n => n.kind === 'note' || n.kind === 'bundle').map(n => n.name), folder ? folder.name : '', this.settings.entryNumbers);
+    const number = this.nextNumberIn(group);
     if (number) meta.number = number;
     const markdown = serializeDocument({ meta, blocks });
     try {
@@ -505,6 +568,64 @@ export class App {
       await this.openNote(r.uuid, { focusTitle: !title });
     } catch (e) {
       toast('Eintrag konnte nicht angelegt werden: ' + e.message, { type: 'error' });
+    }
+  }
+
+  // Nächste freie Nummer im Ordner – bei „nach Thema“ aus Thema und
+  // Unterthemen zusammengesetzt (1.1 → 1.1.2)
+  nextNumberIn(group) {
+    const fmt = this.settings.entryNumbers;
+    if (!fmt || fmt === 'off') return '';
+    const folder = group && this.lib.get(group);
+    const kids = (folder && folder.children) || [];
+    if (fmt === 'chapter') {
+      const chain = topicChain(this.lib.topicPath(group, this.settings.subjects || []).map(n => n.name));
+      return nextEntryNumber(kids.map(n => n.name), chain, fmt);
+    }
+    return nextEntryNumber(kids.filter(n => n.kind === 'note' || n.kind === 'bundle').map(n => n.name), folder ? folder.name : '', fmt);
+  }
+
+  // Themen des Eintrags unterhalb des Fachs (für die Anzeige im Kopf)
+  topicNames(uuid) {
+    const place = this.lib.placeOf(uuid);
+    return this.lib.topicPath(place, this.settings.subjects || []).map(n => n.name);
+  }
+
+  // Fach und Thema wählen: Eintrag wandert in den Ordner und bekommt die passende Nummer
+  async fileEntry(uuid) {
+    uuid = uuid || (this.current && this.current.kind === 'note' && this.current.uuid);
+    if (!uuid) return;
+    if (!this.current || this.current.uuid !== uuid || !this.editor) await this.openNote(uuid);
+    if (!this.editor) return;
+    await this.saveNow();
+    const res = await filingDialog(this, { uuid, meta: { ...this.editor.doc.meta } });
+    if (!res) return;
+    if (res.remove) { this.editor.setMeta({ subject: undefined }); return; }
+    const t = toast('Wird abgelegt …', { type: 'busy', timeout: 0 });
+    try {
+      let parent = res.home.entries;
+      if (!parent) {
+        parent = res.home.create.parent;
+        for (const name of res.home.create.names) parent = (await call('group.create', { parent, name })).uuid;
+      }
+      for (const step of res.path) parent = step.tmp ? (await call('group.create', { parent, name: step.name })).uuid : step.uuid;
+      if (this.lib.placeOf(uuid) !== parent) await call('record.move', { uuid, to: parent });
+      if (this.current && this.current.uuid === uuid && this.editor) {
+        this.editor.setMeta({ subject: res.subject, number: res.number || undefined });
+        this.onTitleChange(this.editor.doc.meta.title || '');
+        await this.saveNow();
+      }
+      await this.lib.refresh();
+      this.sidebar.reveal(uuid);
+      this.renderTopbar();
+      if (this.editor) this.editor.renderHeader();
+      t.close();
+      const where = [res.subject, ...res.path.map(p => p.name)].join(' › ');
+      toast(`Abgelegt unter ${where}`, { type: 'success' });
+    } catch (e) {
+      t.close();
+      toast('Ablegen fehlgeschlagen: ' + e.message, { type: 'error' });
+      await this.lib.refresh();
     }
   }
 
@@ -641,7 +762,10 @@ export class App {
     const app = this;
     return {
       openSettings: (section) => openSettings(app, section),
-      listNotes: () => app.lib.flatDocs().map(d => ({ uuid: d.uuid, name: d.name, path: d.path, kind: d.kind })),
+      fileEntry: () => app.fileEntry(),
+      topicNames: () => (app.current && app.current.kind === 'note' ? app.topicNames(app.current.uuid) : []),
+      listNotes: () => app.lib.flatDocs().filter(d => !app.current || d.uuid !== app.current.uuid).map(d => ({ uuid: d.uuid, name: d.name, path: d.path, kind: d.kind, type: d.node.type, ext: d.node.ext })),
+      pickDocument: (opts = {}) => pickDocument(app, { exclude: app.current && app.current.uuid, ...opts }),
       noteTitle: (uuid) => { const n = app.lib.get(uuid); return n ? n.name : null; },
       openLink: (href) => {
         const uuid = uuidFromLink(href);
@@ -655,6 +779,13 @@ export class App {
         call('open.url', { url: href });
       },
       openPDF: (uuid) => app.openPDF(uuid),
+      editImage: async (src) => {
+        const u = uuidFromLink(src);
+        if (!u) return;
+        const back = app.current && app.current.kind === 'note' ? app.current.uuid : null;
+        await app.saveNow();
+        app.openFile(u, { back });
+      },
       revealLink: (href) => { const u = uuidFromLink(href); if (u) call('record.reveal', { uuid: u }); },
       pickFiles: async (kind) => {
         const res = await call('asset.pick', { note: app.current && app.current.uuid, kind });
@@ -707,6 +838,7 @@ export class App {
   // Der Mac-App mitteilen, wo man das Fenster anfassen kann (Kopfzeilen)
   layoutChanged() {
     if (this.pdfView) this.pdfView.sendRect();
+    if (this.fileView) this.fileView.sendRect();
     if (!isNative) return;
     cancelAnimationFrame(this._layoutRaf);
     this._layoutRaf = requestAnimationFrame(() => {

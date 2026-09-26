@@ -40,7 +40,7 @@ export function block(type, props = {}) {
 // Front Matter (kleines YAML-Subset)
 // ---------------------------------------------------------------------------
 
-const META_ORDER = ['title', 'number', 'subject', 'date', 'tags', 'font', 'numbering', 'fullWidth', 'smallText', 'mathSyntax', 'heft'];
+const META_ORDER = ['title', 'number', 'subject', 'date', 'tags', 'font', 'numbering', 'fullWidth', 'smallText', 'fontSize', 'lineNumbers', 'mathSyntax', 'heft'];
 
 function yamlScalar(v) {
   if (v === true) return 'true';

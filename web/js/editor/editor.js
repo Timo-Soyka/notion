@@ -7,6 +7,7 @@
 // bleibt Tippen flüssig, auch in langen Einträgen.
 
 import * as UI from '../ui/ui.js';
+import { renderOverlay as renderLineNumbers } from './linenumbers.js';
 import { h } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { block, newId, TEXT_TYPES, LIST_TYPES, isEmptyHTML } from '../core/markdown.js';
@@ -88,6 +89,8 @@ export class Editor {
     if (this.readonly) this.docEl.dataset.readonly = '';
     this.headerEl = h('div', { class: 'doc-header' });
     this.blocksEl = h('div', { class: 'blocks' });
+    // Zeilennummern neu setzen, sobald sich der Text umbricht (Tippen, Fensterbreite, Auf-/Zuklappen)
+    if (!this.print && window.ResizeObserver) { this._lnRO = new ResizeObserver(() => this.lineNumbersSoon()); this._lnRO.observe(this.blocksEl); }
     this.fnEl = h('div', { class: 'doc-footnotes' });
     this.endEl = h('div', { class: 'doc-end' });
     this.docEl.append(this.headerEl, this.blocksEl, this.fnEl);
@@ -96,6 +99,8 @@ export class Editor {
   }
 
   destroy() {
+    this._lnRO && this._lnRO.disconnect();
+    cancelAnimationFrame(this._lnRaf);
     this.format && this.format.destroy();
     this.slash && this.slash.close();
     this._unbind && this._unbind();
@@ -139,11 +144,24 @@ export class Editor {
     const font = m.font || this.settings.font || 'sans';
     d.font = font;
     if (m.smallText) d.small = ''; else delete d.small;
+    // Schriftgröße in Punkt (Eintrag vor Einstellungen); 1 pt = 1,25 px wie beim Drucken
+    const pt = Number(m.fontSize) || Number(this.settings.fontSize) || 0;
+    if (pt) this.docEl.style.setProperty('--doc-size', (pt * 1.25 * (m.smallText && !m.fontSize ? 0.875 : 1)) + 'px');
+    else this.docEl.style.removeProperty('--doc-size');
     if (m.fullWidth) d.full = ''; else delete d.full;
     const numbering = m.numbering !== undefined ? m.numbering : (this.settings.numbering || '');
     if (numbering && numbering !== 'off') d.numbering = numbering; else delete d.numbering;
     const colored = m.headingColor !== undefined ? m.headingColor : this.settings.headingColor !== false;
     if (colored) d.headingColor = ''; else delete d.headingColor;
+    if (m.lineNumbers) d.lines = String(m.lineNumbers); else delete d.lines;
+    this.lineNumbersSoon();
+  }
+
+  // Zeilennummern am Rand (⋯-Menü → Zeilennummern)
+  lineNumbersSoon() {
+    if (this.print || !this.docEl) return;
+    cancelAnimationFrame(this._lnRaf);
+    this._lnRaf = requestAnimationFrame(() => renderLineNumbers(this.docEl, this.blocksEl, Number(this.doc && this.doc.meta.lineNumbers) || 0));
   }
 
   // Einstellungen der Nummerierung: Eintrag (⋯-Menü) vor Standard (Einstellungen)
@@ -272,7 +290,7 @@ export class Editor {
   alignSoon() {
     if (this._alignQueued) return;
     this._alignQueued = true;
-    const run = () => { if (!this._alignQueued) return; this._alignQueued = false; this.alignMarks(); };
+    const run = () => { if (!this._alignQueued) return; this._alignQueued = false; this.alignMarks(); this.lineNumbersSoon(); };
     requestAnimationFrame(run);
     setTimeout(run, 80);
   }
@@ -534,10 +552,15 @@ export class Editor {
   headings() {
     const map = this.headingNumberMap();
     const out = [];
+    const used = new Map();
     for (const b of this.flat()) {
       if (!/^h[123]$/.test(b.type)) continue;
       const text = segsToText(htmlToSegs(this.currentHTML(b))).trim();
-      out.push({ id: b.id, level: +b.type[1], text: text || 'Ohne Titel', number: (map.get(b.id) || '').replace(/\.$/, '') });
+      // Dauerhafter Anker aus dem Text der Überschrift (#zusammenfassung, bei Doppelten #zusammenfassung-2)
+      const base = headingSlug(text);
+      const k = (used.get(base) || 0) + 1;
+      used.set(base, k);
+      out.push({ id: b.id, slug: k > 1 ? `${base}-${k}` : base, level: +b.type[1], text: text || 'Ohne Titel', number: (map.get(b.id) || '').replace(/\.$/, '') });
     }
     return out;
   }
@@ -591,6 +614,8 @@ export class Editor {
   }
 
   scrollToBlock(id) {
+    // Verweise auf Überschriften: Anker aus dem Text (#zusammenfassung) oder – ältere Verweise – die Block-ID
+    if (!this.els.has(id)) { const hd = this.headings().find(x => x.slug === id); if (hd) id = hd.id; }
     const el = this.els.get(id);
     if (!el) return;
     el.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -616,7 +641,7 @@ export class Editor {
       }
       if (!m.subject) {
         const sb = h('button', { class: 'btn sm' }, icon('cap', 'sm'), 'Fach');
-        sb.addEventListener('click', () => this.subjectMenu(sb));
+        sb.addEventListener('click', () => this.chooseSubject(sb));
         tools.append(sb);
       }
       if (!m.date) {
@@ -640,8 +665,16 @@ export class Editor {
     if (m.subject) {
       const sc = subjectColor(this.settings, m.subject);
       const p = h('button', { class: 'prop subject' + (sc ? ' colored' : ''), 'data-c': sc || null }, h('span', { html: icon('cap', 'sm') }), h('span', { class: 'v', text: m.subject }));
-      if (!this.readonly) p.addEventListener('click', () => this.subjectMenu(p));
+      if (!this.readonly) p.addEventListener('click', () => this.chooseSubject(p));
       props.append(p);
+      // Thema und Unterthemen, in denen der Eintrag liegt
+      const topics = (!this.readonly && this.host.topicNames && this.host.topicNames()) || [];
+      if (this.host.fileEntry && !this.readonly) {
+        const t = h('button', { class: 'prop topic' }, h('span', { html: icon('folder', 'sm') }),
+          h('span', { class: 'v' + (topics.length ? '' : ' empty'), text: topics.length ? topics.join(' › ') : 'Thema wählen' }));
+        t.addEventListener('click', () => this.host.fileEntry());
+        props.append(t);
+      }
     }
     if (m.date) {
       const p = h('button', { class: 'prop' }, h('span', { html: icon('calendar', 'sm') }), h('span', { class: 'v', text: UI.formatDate(m.date) }));
@@ -709,6 +742,12 @@ export class Editor {
     if (v === null) return;
     this.setMeta({ number: v.trim() || undefined });
     this.onTitleChange(this.doc.meta.title || '');
+  }
+
+  // Fach wählen: in der App mit Ablage in Fach und Thema, sonst nur als Eigenschaft
+  chooseSubject(anchor) {
+    if (this.host.fileEntry) this.host.fileEntry();
+    else this.subjectMenu(anchor);
   }
 
   subjectMenu(anchor) {
@@ -1861,3 +1900,12 @@ function tagColor(t) {
 }
 
 export { defaultPlotConfig, emptyTable };
+
+// Anker für eine Überschrift: „Die Zelle – Aufbau“ → „die-zelle-aufbau“
+export function headingSlug(text) {
+  const s = String(text || '').toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return s || 'abschnitt';
+}

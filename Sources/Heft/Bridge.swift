@@ -19,6 +19,11 @@ protocol BridgeHost: AnyObject {
     func pdfTool(_ args: [String: Any])
     func pdfAction(_ args: [String: Any], reply: @escaping (Result<Any, Error>) -> Void)
     func pdfVisible(_ visible: Bool) -> String?
+    func openOverlay(_ v: DocOverlay, rect: CGRect)
+    func closeOverlay()
+    func setOverlayRect(_ rect: CGRect)
+    func overlayAction(_ a: [String: Any]) -> Any
+    func overlayVisible(_ visible: Bool) -> String?
     func showScanMenu(parent: String, reply: @escaping (Result<Any, Error>) -> Void)
     func quitReady()
     func applyTheme(_ theme: String)
@@ -297,6 +302,154 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
 
         case "pdf.visible":
             let snap = host?.pdfVisible((a["visible"] as? Bool) ?? true)
+            reply(.success(["snapshot": snap.map { $0 as Any } ?? NSNull()]))
+
+        // ---------------- Andere Dateien ----------------
+
+        case "file.info":
+            let uuid = s("uuid")
+            bg(reply) {
+                guard var r = try self.dt.run(Scripts.info, [uuid]) as? [String: Any] else { throw DTError.script("Datei nicht gefunden") }
+                let path = (r["path"] as? String) ?? ""
+                r["ext"] = URL(fileURLWithPath: path).pathExtension.lowercased()
+                r["bytes"] = ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.intValue ?? 0
+                if path.isEmpty { r["url"] = (try? self.dt.run(Scripts.recordURL, [uuid])) ?? "" }
+                return r
+            }
+
+        case "file.text":
+            let uuid = s("uuid")
+            bg(reply) {
+                let path = try self.dt.path(for: uuid)
+                let (text, enc) = try TextFiles.read(URL(fileURLWithPath: path))
+                return ["text": text, "encoding": enc]
+            }
+
+        case "file.saveText":
+            let uuid = s("uuid"), text = s("text")
+            bg(reply) {
+                // Nur echte Textdokumente – bei anderen Typen würde DEVONthink die Datei umwandeln
+                guard let info = try self.dt.run(Scripts.info, [uuid]) as? [String: Any], (info["type"] as? String) == "txt" else {
+                    throw DTError.script("Diese Datei kann Heft nicht speichern")
+                }
+                let tmp = Store.shared.tempFile("text.txt")
+                try text.write(to: tmp, atomically: true, encoding: .utf8)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                _ = try self.dt.run(Scripts.setPlainText, [uuid, tmp.path])
+                self.dt.forgetPath(uuid)
+                return ["ok": true]
+            }
+
+        case "links.companions":
+            let uuids = (a["uuids"] as? [String]) ?? []
+            bg(reply) {
+                let json = String(decoding: try JSONSerialization.data(withJSONObject: uuids), as: UTF8.self)
+                return try self.dt.run(Scripts.companions, [json])
+            }
+
+        case "sheet.read":
+            let uuid = s("uuid")
+            bg(reply) { try self.dt.run(Scripts.sheetRead, [uuid]) }
+
+        case "sheet.write":
+            let uuid = s("uuid")
+            let cells = a["cells"] ?? []
+            bg(reply) {
+                let tmp = Store.shared.tempFile("zellen.json")
+                try JSONSerialization.data(withJSONObject: cells).write(to: tmp)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                return try self.dt.run(Scripts.sheetWrite, [uuid, tmp.path])
+            }
+
+        case "file.apps":
+            let uuid = s("uuid")
+            bg(reply) { Apps.forFile(URL(fileURLWithPath: try self.dt.path(for: uuid))) }
+
+        case "file.openWith":
+            // Über DEVONthink öffnen – so bleibt die Datei beim Bearbeiten mit der Datenbank verbunden
+            var link = "x-devonthink-item://\(s("uuid"))?openexternally=1"
+            if !s("app").isEmpty, let app = s("app").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) { link += "&app=\(app)" }
+            if let url = URL(string: link) { NSWorkspace.shared.open(url) }
+            reply(.success(true))
+
+        case "image.info":
+            let uuid = s("uuid")
+            bg(reply) { try ImageFiles.info(uuid: uuid) }
+
+        case "image.save":
+            let uuid = s("uuid")
+            let pages = (a["pages"] as? [[String: Any]]) ?? []
+            let layer = a["layer"] ?? NSNull()
+            bg(reply) {
+                let r = try ImageFiles.save(uuid: uuid, pages: pages, layer: layer)
+                DispatchQueue.main.async { SchemeHandler.shared.invalidate(uuid: uuid) }
+                return r
+            }
+
+        case "image.revert":
+            let uuid = s("uuid")
+            bg(reply) {
+                let ok = try ImageFiles.revert(uuid: uuid)
+                DispatchQueue.main.async { SchemeHandler.shared.invalidate(uuid: uuid) }
+                return ok
+            }
+
+        case "image.copy":
+            let uuid = s("uuid"), parent = s("parent")
+            bg(reply) {
+                let tmp = try ImageFiles.pngCopy(uuid: uuid)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                return try self.importFiles([tmp], into: parent).first ?? [:]
+            }
+
+        case "rich.copy":
+            // Word/OpenOffice → bearbeitbare RTF-Kopie daneben
+            let uuid = s("uuid"), parent = s("parent")
+            bg(reply) {
+                let path = try self.dt.path(for: uuid)
+                let url = URL(fileURLWithPath: path)
+                let text = try NSAttributedString(url: url, options: [:], documentAttributes: nil)
+                guard let data = text.rtf(from: NSRange(location: 0, length: text.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) else {
+                    throw DTError.script("Dokument kann nicht umgewandelt werden")
+                }
+                let tmp = Store.shared.tempFile(url.deletingPathExtension().lastPathComponent + " (bearbeitbar).rtf")
+                try data.write(to: tmp)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                return try self.importFiles([tmp], into: parent).first ?? [:]
+            }
+
+        case "overlay.open":
+            let uuid = s("uuid"), mode = s("mode"), rect = Self.rect(a["rect"])
+            let editable = (a["editable"] as? Bool) ?? false
+            bg(reply) {
+                let path = try self.dt.path(for: uuid)
+                DispatchQueue.main.async {
+                    guard let host = self.host as? MainWindowController else { return }
+                    do {
+                        let url = URL(fileURLWithPath: path)
+                        let v: DocOverlay = mode == "rich" ? try RichTextOverlay(uuid: uuid, url: url, editable: editable, host: host)
+                            : mode == "media" ? MediaOverlay(uuid: uuid, url: url) : QuickLookOverlay(uuid: uuid, url: url)
+                        self.host?.openOverlay(v, rect: rect)
+                    } catch {
+                        self.host?.emit("toast", ["message": "Datei kann nicht angezeigt werden: \(error.localizedDescription)", "type": "error"])
+                    }
+                }
+                return ["ok": true]
+            }
+
+        case "overlay.close":
+            host?.closeOverlay()
+            reply(.success(true))
+
+        case "overlay.rect":
+            host?.setOverlayRect(Self.rect(a["rect"]))
+            reply(.success(true))
+
+        case "overlay.action":
+            reply(.success(host?.overlayAction(a) ?? false))
+
+        case "overlay.visible":
+            let snap = host?.overlayVisible((a["visible"] as? Bool) ?? true)
             reply(.success(["snapshot": snap.map { $0 as Any } ?? NSNull()]))
 
         // ---------------- Export ----------------

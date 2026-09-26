@@ -17,6 +17,7 @@ export const DEFAULTS = {
   autoPdf: true,
   syncTags: true,
   font: 'mono',
+  fontSize: null,   // Punkt (pt) im PDF; null = je nach Schrift 12 bzw. 12,8 pt
   numbering: '1.1',
   numberDepth: 3,
   numberPrefix: false,
@@ -36,6 +37,44 @@ export function withDefaults(s) {
   const out = { ...DEFAULTS, ...(s || {}) };
   out.pdf = { ...DEFAULTS.pdf, ...((s && s.pdf) || {}) };
   return out;
+}
+
+// Standard-Schriftgröße in Punkt (pt) – so groß steht der Text im PDF.
+// Am Bildschirm entspricht 1 pt 1,25 Pixeln (wie beim Drucken).
+export const defaultFontPt = (font) => (font === 'mono' ? 12 : 12.8);
+const fmtPt = (v) => String(Math.round(v * 10) / 10).replace('.', ',');
+
+function fontSizeControl(app) {
+  const box = h('div', { class: 'fs-control' });
+  const value = h('span', { class: 'fs-value' });
+  const preview = h('div', { class: 'fs-preview', text: 'Die Zelle ist die kleinste Einheit des Lebens.' });
+  const reset = h('button', { class: 'btn sm', text: 'Standard' });
+  const paint = () => {
+    const s = app.settings;
+    const pt = s.fontSize || defaultFontPt(s.font);
+    value.textContent = `${fmtPt(pt)} pt`;
+    reset.style.visibility = s.fontSize ? 'visible' : 'hidden';
+    preview.style.fontSize = pt * 1.25 + 'px';
+    preview.style.fontFamily = s.font === 'mono' ? 'var(--font-mono)' : s.font === 'serif' ? 'var(--font-serif)' : 'var(--font-sans)';
+  };
+  const set = async (pt) => {
+    await app.updateSettings({ fontSize: pt });
+    app.refreshEditorSettings();
+    paint();
+  };
+  const step = (d) => {
+    const cur = app.settings.fontSize || defaultFontPt(app.settings.font);
+    const next = Math.min(20, Math.max(8, Math.round((cur + d) * 2) / 2));
+    set(next);
+  };
+  const minus = h('button', { class: 'btn sm outline fs-step', 'data-tip': 'Kleiner', text: '−' });
+  const plus = h('button', { class: 'btn sm outline fs-step', 'data-tip': 'Größer', text: '+' });
+  minus.addEventListener('click', () => step(-0.5));
+  plus.addEventListener('click', () => step(0.5));
+  reset.addEventListener('click', () => set(null));
+  box.append(h('div', { class: 'fs-row' }, minus, value, plus, reset), preview);
+  paint();
+  return box;
 }
 
 function row(title, desc, control) {
@@ -136,6 +175,7 @@ export function openSettings(app, section = 'general') {
     editor: ['Editor', 'pencil', () => [
       h('h3', { text: 'Editor' }), h('p', { class: 'desc', text: 'Voreinstellungen für neue Einträge. Einzelne Einträge kannst du über „⋯“ oben rechts anpassen.' }),
       row('Schrift', 'Standard, Serifen oder Monospace (SF Mono).', seg([['sans', 'Standard'], ['serif', 'Serif'], ['mono', 'Mono']], s.font, (v) => { save({ font: v }); app.refreshEditorSettings(); })),
+      row('Schriftgröße', 'Gilt für alle Einträge ohne eigene Größe. Angabe in Punkt wie im PDF (und wie in Word) – am Bildschirm entsprechend größer.', fontSizeControl(app)),
       row('Überschriften farbig', 'Dunkelblaue Überschriften wie in deiner Vorlage.', sw(s.headingColor, (v) => { save({ headingColor: v }); app.refreshEditorSettings(); })),
       row('Typografie beim Tippen', '-> wird →, "…" wird „…“, ... wird …', sw(s.typography !== false, (v) => save({ typography: v }))),
       row('„&“ im Text ausrichten', '„&“ setzt einen farbigen Ausrichtungspunkt (Zahl danach = ID). Zweimal „&“ ergibt ein normales &.', sw(s.textAlignMarks !== false, (v) => save({ textAlignMarks: v })))
@@ -173,7 +213,7 @@ export function openSettings(app, section = 'general') {
         h('h4', { text: 'Abbildungen und Tabellen' }),
         row('Beschriftungen nummerieren', '„Abbildung 1: …“ und „Tabelle 1: …“ vor jeder Beschriftung.', sw(s.captionNumbers, (v) => live({ captionNumbers: v }))),
         h('h4', { text: 'Neue Einträge' }),
-        row('Automatisch nummerieren', 'Neue Einträge bekommen die nächste freie Nummer im Ordner. Du kannst sie jederzeit ändern (Klick auf die Nummer über dem Titel).', seg(ENTRY_FORMATS, s.entryNumbers || 'off', (v) => save({ entryNumbers: v })))
+        row('Automatisch nummerieren', '„Nach Thema“: Die Nummer setzt sich aus Thema und Unterthemen zusammen und nimmt den nächsten freien Platz – im Unterthema 1.1 mit einem Eintrag also 1.1.2. Du kannst sie jederzeit ändern (Klick auf die Nummer über dem Titel).', seg(ENTRY_FORMATS, s.entryNumbers || 'off', (v) => save({ entryNumbers: v })))
       ];
     }],
     pdf: ['PDF & Druck', 'printer', () => {

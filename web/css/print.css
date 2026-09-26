@@ -16,13 +16,25 @@ body.print-mode { -webkit-print-color-adjust: exact; print-color-adjust: exact; 
 .doc.print .blk-text[data-ph]:empty::before { content: none; }
 .doc.print .blk[data-type="pagebreak"] { break-after: page; page-break-after: always; height: 0; margin: 0; }
 .doc.print .blk[data-type="pagebreak"] > .blk-main { display: none; }
-.doc.print .blk[data-type="callout"], .doc.print .math-view, .doc.print .plot-wrap, .doc.print .img-wrap,
-.doc.print .smiles-wrap, .doc.print .code-wrap, .doc.print .htable tr, .doc.print .pdf-pages img, .doc.print .blk[data-type="quote"] {
+/* Nicht teilbar: Formeln, Graphen, Bilder, Strukturformeln, Tabellenzeilen, PDF-Seiten */
+.doc.print .math-view, .doc.print .plot-wrap, .doc.print .img-wrap,
+.doc.print .smiles-wrap, .doc.print .htable tr, .doc.print .pdf-pages img {
   break-inside: avoid; page-break-inside: avoid;
 }
+/* Kästen, Zitate, Code und Aufgaben bleiben nur zusammen, wenn sie kurz sind (Klasse „keep“ aus print.js) */
+.doc.print .blk.keep { break-inside: avoid; page-break-inside: avoid; }
+/* Nie eine einzelne Zeile allein am Seitenende oder -anfang */
+.doc.print .blk-text { orphans: 2; widows: 2; }
+/* Für den Druck geteilte Absätze und Aufgaben ohne Lücke fortsetzen */
+.doc.print .blk.split-head { margin-bottom: 0; }
+.doc.print .blk.cont { margin-top: 0; }
+.doc.print .blk.cont > .blk-main > .blk-text::before { content: none; }
+.doc.print .blk.split-head > .blk-main > .blk-text { padding-bottom: 0; }
+.doc.print .blk.cont > .blk-main > .blk-text { padding-top: 0; }
+.doc.print .split-kids { padding-bottom: 0; margin-bottom: 0; }
+.doc.print .split-rest { padding-top: 0; margin-top: 0; }
 .doc.print .blk[data-type^="h"] { break-after: avoid; page-break-after: avoid; }
-/* Aufgaben nicht zerreißen: Nummer + eingerückte Rechnung bzw. zusammengehörige Blöcke */
-.doc.print .blk[data-type="p"]:has(> .blk-children > .blk),
+/* Zusammengehöriges (Aufgabennummer + Rechnung, Überschrift + Anfang des Textes) */
 .doc.print .keep-together { break-inside: avoid; page-break-inside: avoid; }
 .doc.print .blk[data-type="math"] { break-inside: avoid; page-break-inside: avoid; }
 .doc.print .toggle-btn .icon { transform: rotate(90deg); }
@@ -35,3 +47,7 @@ body.print-mode { -webkit-print-color-adjust: exact; print-color-adjust: exact; 
 .doc.print a.note-link::before { content: none; }
 
 .doc.print .table-wrap { overflow: visible; padding-bottom: 4px; }
+/* Zeilennummern: Platz links neben dem Text, damit die Nummern nicht im Seitenrand verschwinden */
+.doc.print[data-lines] .blocks { margin-left: 38px; }
+/* Inhaltsverzeichnis im PDF: anklickbar, aber ohne Link-Optik */
+.doc.print .toc-item { text-decoration: none; color: inherit; }

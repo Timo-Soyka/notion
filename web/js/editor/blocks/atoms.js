@@ -565,6 +565,7 @@ export const image = {
         frame.append(hd);
       }
       frame.append(mediaBar(ed, b, [
+        ...(ed.host.editImage ? [{ label: 'Bearbeiten', onClick: () => ed.host.editImage(b.src) }] : []),
         { label: 'Beschriftung', onClick: () => { const c = wrap.querySelector('.caption'); if (c) c.focus(); else { b.caption = b.caption || ''; b._cap = true; ed.rerender(b); requestAnimationFrame(() => ed.elOf(b).querySelector('.caption')?.focus()); } } },
         { icon: 'alignLeft', tip: 'Links', onClick: () => setAlign(ed, b, 'left') },
         { icon: 'alignCenter', tip: 'Mitte', onClick: () => setAlign(ed, b, null) },
@@ -576,6 +577,11 @@ export const image = {
         if (e.target.closest('.media-bar, .img-handle')) return;
         e.preventDefault();
         ed.selectBlocks([b]);
+      });
+      // Doppelklick öffnet den Bildeditor (Textfelder, Pfeile, Zuschneiden …)
+      frame.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.media-bar, .img-handle') || !ed.host.editImage) return;
+        ed.host.editImage(b.src);
       });
     }
     wrap.append(frame);

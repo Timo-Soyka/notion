@@ -40,6 +40,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BridgeHo
     let webView: HeftWebView
     private(set) var bridge: Bridge!
     private var pdfEditor: PDFEditorView?
+    private var docOverlay: DocOverlay?
     private var pendingScanParent: String?
     private var quitPending = false
 
@@ -183,12 +184,49 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BridgeHo
         return snapshot
     }
 
+    // MARK: - Weitere Dateiansichten (Quick Look, RTF)
+
+    func openOverlay(_ v: DocOverlay, rect: CGRect) {
+        closeOverlay()
+        v.frame = rect
+        window?.contentView?.addSubview(v, positioned: .above, relativeTo: webView)
+        docOverlay = v
+        (v as? RichTextOverlay)?.focus()
+    }
+
+    func closeOverlay() {
+        guard let v = docOverlay else { return }
+        v.shutdown()
+        v.removeFromSuperview()
+        docOverlay = nil
+        window?.makeFirstResponder(webView)
+    }
+
+    func setOverlayRect(_ rect: CGRect) { docOverlay?.frame = rect }
+
+    func overlayAction(_ a: [String: Any]) -> Any { docOverlay?.action(a) ?? false }
+
+    func overlayVisible(_ visible: Bool) -> String? {
+        guard let e = docOverlay else { return nil }
+        if visible { e.isHidden = false; return nil }
+        var snapshot: String?
+        if let rep = e.bitmapImageRepForCachingDisplay(in: e.bounds) {
+            e.cacheDisplay(in: e.bounds, to: rep)
+            if let jpg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) {
+                snapshot = "data:image/jpeg;base64," + jpg.base64EncodedString()
+            }
+        }
+        e.isHidden = true
+        return snapshot
+    }
+
     // MARK: - Beenden
 
     func prepareQuit() -> Bool {
         if quitPending { return true }
         quitPending = true
         pdfEditor?.saveNow()
+        docOverlay?.saveNow()
         emit("will-quit", [:])
         // Falls die Oberfläche nicht antwortet, trotzdem beenden
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.quitReady() }
@@ -199,6 +237,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BridgeHo
         guard quitPending else { return }
         quitPending = false
         pdfEditor?.saveNow()
+        docOverlay?.saveNow()
         // Warten, bis DEVONthink alle Speicheraufträge abgearbeitet hat
         DEVONthink.shared.async({ true }) { _ in
             DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: true) }
@@ -280,6 +319,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BridgeHo
     // Fenster schließen = App beenden; so läuft das Speichern über denselben Weg
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         pdfEditor?.saveNow()
+        docOverlay?.saveNow()
         NSApp.terminate(sender)
         return false
     }

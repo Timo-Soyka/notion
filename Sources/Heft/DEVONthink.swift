@@ -529,6 +529,50 @@ enum Scripts {
     }
     """#
 
+    // Zu Einträgen die PDF-Fassung finden (Eintrags-Ordner mit gleichnamiger PDF)
+    static let companions = #"""
+    function main(argv) {
+      const out = {};
+      for (const u of JSON.parse(argv[0])) {
+        out[u] = null;
+        try {
+          const r = dt.getRecordWithUuid(u);
+          if (!r || r.recordType() !== 'markdown') continue;
+          const g = r.locationGroup();
+          if (g.recordType() !== 'group' || g.name() !== r.name()) continue;
+          const kids = g.children, n = kids.name(), t = kids.recordType(), id = kids.uuid();
+          for (let i = 0; i < n.length; i++) if (t[i] === 'PDF document' && n[i] === r.name()) { out[u] = id[i]; break; }
+        } catch (e) {}
+      }
+      return out;
+    }
+    """#
+
+    // Tabellen (CSV/TSV) – DEVONthink schreibt die Datei selbst im richtigen Format
+    // Lesezeichen und andere Datensätze ohne Datei
+    static let recordURL = #"""
+    function main(argv) { const r = rec(argv[0]); let u = ''; try { u = r.URL() || ''; } catch (e) {} return u; }
+    """#
+
+    static let sheetRead = #"""
+    function main(argv) {
+      const r = rec(argv[0]);
+      let columns = [], cells = [];
+      try { columns = r.columns() || []; } catch (e) {}
+      try { cells = r.cells() || []; } catch (e) {}
+      return { columns, cells, type: r.recordType() };
+    }
+    """#
+
+    static let sheetWrite = #"""
+    function main(argv) {
+      const r = rec(argv[0]);
+      if (r.recordType() !== 'sheet') throw new Error('Keine Tabelle');
+      r.cells = JSON.parse(readFile(argv[1]));
+      return { ok: true };
+    }
+    """#
+
     static let setPlainText = #"""
     function main(argv) {
       const r = rec(argv[0]);

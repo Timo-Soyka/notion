@@ -40,9 +40,31 @@ export function attachDnd(ed) {
     return ed.find(blk.dataset.id);
   };
 
-  const place = (b) => {
+  // Wo der Griff eines Blocks sitzt (Bildschirmkoordinaten). In einer Spalte
+  // (außer der ersten) darf er den Anfasser für die Spaltenbreite nicht verdecken:
+  // dann nur der Griff ⋮⋮ direkt daneben, oder – wenn dafür kein Platz ist – ganz davor.
+  const HANDLE_W = 40;
+  const handleBox = (b, mr) => {
     const el = ed.elOf(b);
-    const main = el && el.querySelector(':scope > .blk-main');
+    let left = mr.left - 48;
+    if (b.type === 'callout') left -= 14;
+    let gripOnly = false;
+    const col = el && el.closest('.col');
+    const rz = col && col.querySelector(':scope > .col-resize');
+    if (rz) {
+      const rr = rz.getBoundingClientRect();
+      if (left < rr.right && left + HANDLE_W > rr.left) {
+        if (mr.left - 2 - (rr.right + 2) >= 18) { left = rr.right + 2 - 22; gripOnly = true; }
+        else left = rr.left - 2 - HANDLE_W;
+      }
+    }
+    return { left, gripOnly };
+  };
+
+  const mainOf = (b) => { const el = ed.elOf(b); return el && el.querySelector(':scope > .blk-main'); };
+
+  const place = (b) => {
+    const main = mainOf(b);
     if (!main) { handle.classList.remove('show'); return; }
     const dr = d.getBoundingClientRect();
     const mr = main.getBoundingClientRect();
@@ -51,20 +73,54 @@ export function attachDnd(ed) {
     if (t) lineH = parseFloat(getComputedStyle(t).lineHeight) || 24;
     const topPad = t ? parseFloat(getComputedStyle(t).paddingTop) || 0 : 0;
     const offsetY = t ? topPad + (lineH - 24) / 2 : 4;
-    let left = mr.left - dr.left - 48;
-    if (b.type === 'callout') left -= 14;
-    handle.style.left = left + 'px';
+    const box = handleBox(b, mr);
+    plus.style.visibility = box.gripOnly ? 'hidden' : '';
+    handle.style.left = (box.left - dr.left) + 'px';
     handle.style.top = (mr.top - dr.top + Math.max(0, offsetY)) + 'px';
     handle.classList.add('show');
   };
 
+  // Zu welchem Block gehört der Griff an dieser Stelle? Zuerst die Griffzone
+  // links neben jeder Blockzeile – so erreicht man den Griff auch bei
+  // eingerückten Blöcken und in Spalten, ohne dass er unterwegs zum
+  // übergeordneten Block oder zur Nachbarspalte springt. Bei mehreren Treffern
+  // gewinnt der am weitesten eingerückte bzw. am weitesten rechts stehende Block.
+  const hoverAt = (x, y) => {
+    for (const rz of ed.blocksEl.querySelectorAll('.col-resize')) {
+      const r = rz.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return null;  // Spaltenbreite ziehen
+    }
+    let best = null, bestLeft = -Infinity;
+    for (const b of ed.flat()) {
+      const main = mainOf(b);
+      if (!main) continue;
+      const mr = main.getBoundingClientRect();
+      if (!mr.height || y < mr.top - 2 || y > mr.bottom + 2) continue;
+      if (x > mr.right + 8 || x < mr.left - 70) continue;
+      const box = handleBox(b, mr);
+      if (x < Math.min(mr.left - 56, box.left - 6)) continue;
+      if (mr.left >= bestLeft) { bestLeft = mr.left; best = b; }
+    }
+    return best || blockAt(x, y);
+  };
+
+  let raf = 0, pending = null;
   d.addEventListener('mousemove', (e) => {
     if (dragging || ed.readonly) return;
     hidden = false;
     if (e.target.closest('.blk-handle')) return;
-    const b = blockAt(e.clientX, e.clientY);
-    if (b && b !== hoverBlock) { hoverBlock = b; place(b); }
-    if (!b) { hoverBlock = null; handle.classList.remove('show'); }
+    pending = { x: e.clientX, y: e.clientY };
+    if (raf) return;
+    // Höchstens einmal pro Bild auswerten (Zeitgeber als Rückfall, falls keine Bilder gezeichnet werden)
+    const run = () => {
+      if (!raf) return;
+      cancelAnimationFrame(raf.a); clearTimeout(raf.t); raf = 0;
+      if (dragging || !pending) return;
+      const b = hoverAt(pending.x, pending.y);
+      if (b && b !== hoverBlock) { hoverBlock = b; place(b); }
+      if (!b) { hoverBlock = null; handle.classList.remove('show'); }
+    };
+    raf = { a: requestAnimationFrame(run), t: setTimeout(run, 40) };
   });
   d.addEventListener('mouseleave', () => { if (!dragging) { handle.classList.remove('show'); hoverBlock = null; } });
   d.addEventListener('keydown', () => { if (!hidden) { handle.classList.remove('show'); hidden = true; hoverBlock = null; } });

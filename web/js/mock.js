@@ -287,6 +287,32 @@ export const mock = {
     return delay({ uuid: u, link: `x-devonthink-item://${u}`, name });
   },
   'asset.pick': () => delay([]),
+  // Andere Dateien (nur zum Ausprobieren im Browser)
+  'file.info': ({ uuid }) => {
+    const f = find(load().nodes, uuid);
+    const n = f ? f.node : {};
+    return delay({ uuid, name: n.name, type: n.type || (n.kind === 'image' ? 'picture' : 'unknown'), ext: n.ext || '', url: n.url || '' });
+  },
+  'file.text': ({ uuid }) => delay({ text: (load().files || {})[uuid] || '', encoding: 'UTF-8' }),
+  'file.saveText': ({ uuid, text }) => { const db = load(); db.files = db.files || {}; db.files[uuid] = text; save(db); return delay({ ok: true }); },
+  'sheet.read': ({ uuid }) => { const t = (load().files || {})[uuid] || ''; const rows = t.split('\n').filter(Boolean).map(r => r.split(';')); return delay({ columns: rows.shift() || [], cells: rows, type: 'sheet' }); },
+  'sheet.write': ({ uuid, cells }) => {
+    const db = load(); db.files = db.files || {};
+    const head = ((db.files[uuid] || '').split('\n')[0]) || '';
+    db.files[uuid] = [head, ...cells.map(r => r.join(';'))].join('\n');
+    save(db);
+    return delay({ ok: true });
+  },
+  'file.apps': () => delay([{ name: 'Vorschau', default: true }, { name: 'Pixelmator Pro', default: false }]),
+  'file.openWith': () => delay(true),
+  'image.info': ({ uuid }) => delay({ pages: [{}], writable: true, base: 'current', layer: (load().layers || {})[uuid] || null }),
+  'image.save': ({ uuid, layer, pages }) => { const db = load(); db.layers = db.layers || {}; db.layers[uuid] = layer; db.lastImageSave = pages; save(db); return delay({ ok: true }, 120); },
+  'image.revert': ({ uuid }) => { const db = load(); if (db.layers) delete db.layers[uuid]; save(db); return delay(true); },
+  'overlay.open': () => delay({ ok: true }),
+  'overlay.close': () => delay(true),
+  'overlay.rect': () => delay(true),
+  'overlay.action': () => delay(true),
+  'overlay.visible': () => delay({ snapshot: null }),
   'pdf.import': () => delay([]),
   'pdf.info': () => delay({ pages: 2 }),
   'pdf.open': () => delay({ ok: false, reason: 'Nur in der Mac-App' }),

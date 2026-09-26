@@ -7,6 +7,7 @@ import PDFKit
 //   heft://app/…                → Dateien der Oberfläche aus dem App-Paket
 //   heft://item/<UUID>          → Datei eines DEVONthink-Datensatzes (Bilder, PDFs)
 //   heft://pdfpage/<UUID>/<n>   → PDF-Seite als PNG (für eingebettete Arbeitsblätter)
+//   heft://image/<UUID>?page=n&base=original → Bildseite (jedes Format, aufrecht gedreht)
 //
 // Ein eigenes Schema statt file:// ist nötig, weil WebKit ES-Module von
 // file://-Adressen blockiert.
@@ -41,6 +42,17 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
             let page = Int(parts.dropFirst().first ?? "1") ?? 1
             let width = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "w" })?.value.flatMap(Int.init) ?? 1400
             work.async { self.servePDFPage(uuid, page, width, task) }
+        case "image":
+            let uuid = url.pathComponents.dropFirst().first ?? ""
+            let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let page = q.first(where: { $0.name == "page" })?.value.flatMap(Int.init) ?? 0
+            let original = q.first(where: { $0.name == "base" })?.value == "original"
+            work.async {
+                do {
+                    let (data, mime) = try ImageFiles.render(uuid: uuid, page: page, original: original)
+                    self.finish(task, data: data, mime: mime)
+                } catch { self.fail(task, error.localizedDescription) }
+            }
         default:
             fail(task, "Unbekannt")
         }

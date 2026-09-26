@@ -371,7 +371,9 @@ span[data-c="purple"] { color: var(--t-purple); } span[data-c="pink"] { color: v
   position: absolute; z-index: 30; display: flex; align-items: center; gap: 0; height: 24px;
   opacity: 0; transition: opacity 120ms ease; pointer-events: none; font-family: var(--font-ui);
 }
-.blk-handle.show { opacity: 1; pointer-events: auto; }
+/* Nur die Knöpfe fangen Klicks ab – der Rest des Griffs verdeckt nichts (z. B. den Anfasser für die Spaltenbreite) */
+.blk-handle.show { opacity: 1; }
+.blk-handle.show button { pointer-events: auto; }
 .blk-handle button { width: 22px; height: 24px; border: 0; border-radius: 4px; background: transparent; color: var(--faint); display: flex; align-items: center; justify-content: center; padding: 0; }
 .blk-handle button:hover { background: var(--hover-strong); color: var(--muted); }
 .blk-handle .grip { cursor: grab; width: 18px; }
@@ -537,3 +539,15 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .plot-resize.dragging .plot-size-tip { display: block; }
 body.plot-resizing, body.plot-resizing * { cursor: nwse-resize !important; user-select: none !important; }
 .doc.print .plot-resize { display: none; }
+
+/* Zeilennummern am Rand */
+.ln-layer { position: absolute; top: 0; width: 0; height: 0; pointer-events: none; user-select: none; }
+.ln-num {
+  position: absolute; right: 18px; font-family: var(--font-ui); font-size: 11px; font-weight: 400;
+  color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ln-mark { position: relative; }
+.ln-mark::before {
+  content: attr(data-n); position: absolute; left: calc(var(--ln-dx, 0px) - 36px); top: var(--ln-top, 0.2em); width: 26px; text-align: right;
+  font-family: var(--font-ui); font-size: 0.66em; font-weight: 400; font-style: normal; line-height: var(--ln-lh, 1); color: #8a8a8a; font-variant-numeric: tabular-nums;
+}

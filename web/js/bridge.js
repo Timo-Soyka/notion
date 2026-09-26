@@ -62,6 +62,12 @@ function mockAsset(uuid, page) {
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
+// Seite eines Bildes – jedes Format, von der Mac-App aufrecht gedreht geliefert
+export function imageURL(uuid, { page = 0, base = 'current', v } = {}) {
+  if (isNative) return `heft://image/${uuid}?page=${page}&base=${base}${v ? '&v=' + v : ''}`;
+  return mockAsset(uuid);
+}
+
 export function itemLink(uuid) {
   return `x-devonthink-item://${uuid}`;
 }

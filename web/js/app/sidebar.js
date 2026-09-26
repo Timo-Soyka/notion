@@ -3,6 +3,7 @@
 import { h, esc, menu, promptDialog, confirmDialog, toast } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { subjectColor, subjectOfFolder } from '../core/subjects.js';
+import { iconFor } from '../core/filetypes.js';
 import { call } from '../bridge.js';
 
 const KIND_ICON = { group: 'folder', note: 'note', bundle: 'folder', pdf: 'pdf', image: 'image', file: 'file' };
@@ -154,7 +155,7 @@ export class Sidebar {
     const expandable = isFolder(n);
     const tw = h('span', { class: 'twisty' + (expandable ? '' : ' empty') + (this.expanded.has(n.uuid) ? ' open' : ''), html: icon('chevronRight', 'sm') });
     tw.addEventListener('click', (e) => { e.stopPropagation(); this.toggle(n); });
-    const kind = h('span', { class: 'kind-icon', html: icon(expandable && this.expanded.has(n.uuid) ? 'folderOpen' : KIND_ICON[n.kind] || 'file') });
+    const kind = h('span', { class: 'kind-icon', html: icon(expandable && this.expanded.has(n.uuid) ? 'folderOpen' : (n.kind === 'file' || n.kind === 'image' ? iconFor(n) : KIND_ICON[n.kind]) || 'file') });
     if (n.color) kind.style.color = n.color;
     // Ordner und Einträge im Fach in der Fachfarbe
     if (color && (isFolder(n) || n.kind === 'note')) kind.style.color = `var(--t-${color})`;
@@ -191,7 +192,7 @@ export class Sidebar {
     if (n.kind === 'bundle') { if (!this.expanded.has(n.uuid)) this.toggle(n); this.app.openNote(n.note); return; }
     if (n.kind === 'note') this.app.openNote(n.uuid);
     else if (n.kind === 'pdf') this.app.openPDF(n.uuid);
-    else call('record.openExternal', { uuid: n.uuid });
+    else this.app.openFile(n.uuid);
   }
 
   highlightActive() {
@@ -280,7 +281,11 @@ export class Sidebar {
       );
     } else {
       items.push({ label: 'Öffnen', icon: 'arrowRight', onSelect: () => this.activate(n) });
-      if (n.kind === 'note' || n.kind === 'bundle') items.push({ label: 'Als PDF ablegen', icon: 'download', onSelect: () => app.exportCompanion(n.kind === 'bundle' ? n.note : n.uuid) });
+      if (n.kind === 'note' || n.kind === 'bundle') {
+        items.push({ label: 'Fach und Thema …', icon: 'cap', onSelect: () => app.fileEntry(n.kind === 'bundle' ? n.note : n.uuid) });
+        items.push({ label: 'Als PDF ablegen', icon: 'download', onSelect: () => app.exportCompanion(n.kind === 'bundle' ? n.note : n.uuid) });
+      }
+      if (n.kind !== 'note' && n.kind !== 'bundle') items.push({ label: 'Öffnen mit …', icon: 'external', onSelect: () => app.openWithMenu(anchor, n.uuid) });
       items.push('-');
     }
     items.push(

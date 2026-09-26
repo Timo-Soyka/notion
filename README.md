@@ -4,7 +4,7 @@ Heft ist eine Mac-App für Hefteinträge im Stil von Notion. Man schreibt in Bl�
 
 ## Funktionen
 
-- **Blockeditor**: Überschriften, Listen, To-do-Listen, aufklappbare Abschnitte, Zitate, Code, Bilder, Fußnoten, Inhaltsverzeichnis und Verweise auf andere Einträge. Blöcke lassen sich in Spalten **nebeneinander** anordnen. Die Breiten gibt man als Verhältnis (1 : 2) oder als feste Werte (5 cm) an.
+- **Blockeditor**: Überschriften, Listen, To-do-Listen, aufklappbare Abschnitte, Zitate, Code, Bilder, Fußnoten und Inhaltsverzeichnis. Zeilenumbruch ohne neuen Absatz mit Shift+Enter. Blöcke lassen sich in Spalten **nebeneinander** anordnen. Die Breiten gibt man als Verhältnis (1 : 2) oder als feste Werte (5 cm) an.
 - **Formeln**: Eingabefelder mit deutschen Kürzeln wie `wurzel`, `bruch`, `integral` oder `pfeil`. Einheiten wie cm oder kg werden automatisch erkannt, auch mit Potenzen. Mit `&` richtet man Zeilen aus, mit `||` setzt man einen Kommandostrich für Äquivalenzumformungen, und `~` erzeugt ein Wurzelzeichen ohne Radikand.
 - **Chemie**: Summenformeln, Reaktionsgleichungen und organische Moleküle als Strukturformel (aus SMILES).
 - **Graphen**: Funktionsgraphen mit frei einstellbarem Ausschnitt. Die Größe lässt sich durch Ziehen an der Ecke ändern.
@@ -13,7 +13,12 @@ Heft ist eine Mac-App für Hefteinträge im Stil von Notion. Man schreibt in Bl�
 - **Ausrichtungspunkte** (`&`) auch im Fließtext, zum Beispiel für Buchangaben untereinander.
 - **Vorlagen**: `/Aufgabe` (mit fortlaufender Nummer: 10a → 10b), `/Übungsaufgaben`, `/Umformung`, `/Versuchsprotokoll` und `/Vokabeltabelle`.
 - **PDF**: Arbeitsblätter importieren, darauf schreiben und markieren, Seiten drehen, löschen oder hinzufügen und Text erkennen lassen (OCR). Jeder Eintrag bekommt ein passendes PDF zum Ausdrucken.
-- **Fächer** mit eigenen Farben, einstellbar in den Einstellungen.
+- **Fächer und Themen**: Mit „Fach“ wählt man Fach und Thema, Unterthema usw. (beliebig tief). Der Eintrag wandert in den passenden Ordner. Neue Themen legt man direkt dort an. Die Nummer nimmt den nächsten freien Platz (1.1 → 1.1.2). Fächer haben eigene Farben.
+- **Verweise**: Links auf Einträge, PDFs, Bilder und andere Dateien – per `/Verweis`, `@` oder ⌘K. Dabei kann man Ordner durchblättern oder suchen. Die Links funktionieren auch im PDF: Verweise auf Einträge öffnen deren PDF-Fassung, Inhaltsverzeichnis und Überschrift-Verweise springen innerhalb der Datei.
+- **Bilder bearbeiten**: Textfelder (verschiebbar, mit Schrift, Größe, Hintergrund und Rahmen), Pfeile, Linien, Formen, Stift, Textmarker, Nummern zum Beschriften und Abdecken. Dazu Zuschneiden, Drehen und Spiegeln. Das Format bleibt erhalten (TIFF bleibt TIFF, auch mehrseitig), das Original wird aufgehoben.
+- **Alle Dateitypen**: Text- und Code-Dateien sowie CSV-Tabellen lassen sich bearbeiten, RTF-Dokumente mit Formatierung. Word, Pages, Excel, Keynote, Audio und Video zeigt Heft an; bearbeitet werden sie per Klick im passenden Programm.
+- **Zeilennummern** am Rand (jede, jede 5. oder jede 10. Zeile), auch im PDF.
+- **Schriftgröße** für alle Einträge in den Einstellungen, pro Eintrag anpassbar.
 - **Typst**: Formeln in Typst-Schreibweise werden beim Öffnen automatisch umgewandelt.
 
 ## Installation

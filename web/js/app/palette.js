@@ -2,6 +2,7 @@
 // DEVONthink – die kennt auch den Text in PDFs und eingescannten Blättern.
 
 import { h, esc, dialog, debounce } from '../ui/ui.js';
+import { iconFor } from '../core/filetypes.js';
 import { icon } from '../ui/icons.js';
 import { call } from '../bridge.js';
 
@@ -46,14 +47,14 @@ export function openPalette(app) {
         .filter(x => x.s).sort((a, b) => b.s - a.s).slice(0, 12).map(x => x.d);
     items = [];
     const sections = [];
-    if (titleHits.length) sections.push([q ? 'Einträge' : 'Zuletzt geöffnet', titleHits.map(d => ({
-      label: d.name, desc: d.path, icon: d.kind === 'pdf' ? 'pdf' : 'note', run: () => d.kind === 'pdf' ? app.openPDF(d.uuid) : app.openNote(d.uuid)
+    if (titleHits.length) sections.push([q ? 'Einträge und Dateien' : 'Zuletzt geöffnet', titleHits.map(d => ({
+      label: d.name, desc: d.path, icon: iconFor(d.node), run: () => app.openRecord(d.uuid)
     }))]);
     const seen = new Set(titleHits.map(d => d.uuid));
     const ft = fulltext.filter(r => !seen.has(r.uuid));
     if (ft.length) sections.push(['Im Text gefunden', ft.map(r => ({
       label: r.name, desc: r.location, icon: r.kind === 'pdf' ? 'pdf' : r.kind === 'note' ? 'note' : 'file',
-      run: () => r.kind === 'pdf' ? app.openPDF(r.uuid) : r.kind === 'note' ? app.openNote(r.uuid) : call('record.reveal', { uuid: r.uuid })
+      run: () => app.openRecord(r.uuid)
     }))]);
     const cmds = commands.filter(c => !q || norm(c.label).includes(nq));
     if (cmds.length) sections.push(['Befehle', cmds]);

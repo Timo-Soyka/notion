@@ -10,6 +10,7 @@ import { defaultPlotConfig } from './blocks/plot.js';
 import { emptyTable } from './blocks/table.js';
 import { openInlineMath, openFootnote } from './format.js';
 import { itemLink } from '../bridge.js';
+import { iconFor } from '../core/filetypes.js';
 
 // Platzhalterzeichen für Atome, damit Positionen im Klartext stimmen
 const OBJ = '\uFFFC';
@@ -89,7 +90,7 @@ export const COMMANDS = [
     if (res && res.length) ed.setType(b, 'pdf', { src: res[0].link, caption: res[0].name || '' });
     else ed.setType(b, 'pdf', { src: '' });
   } },
-  { group: 'Medien', id: 'link', label: 'Verweis auf Eintrag', desc: 'Link zu einem anderen Eintrag', icon: 'link', kw: 'link verweis eintrag seite mention @ wiki', hint: '@', run: (ed, b) => { const t = ed.textElOf(b); if (t) ed.slash.openMention(b, t, null); } },
+  { group: 'Medien', id: 'link', label: 'Verweis auf Datei', desc: 'Link zu einem Eintrag, PDF, Bild … – Ordner durchblättern oder suchen', icon: 'link', kw: 'link verweis eintrag datei pdf bild seite mention @ wiki verlinken', hint: '@', run: (ed, b) => pickAndInsertLink(ed, b) },
 
   { group: 'Dokument', id: 'toc', label: 'Inhaltsverzeichnis', desc: 'Alle Überschriften', icon: 'toc', kw: 'inhaltsverzeichnis toc gliederung inhalt', run: atomCmd('toc') },
   { group: 'Dokument', id: 'alignmark', label: 'Ausrichtungspunkt', desc: 'Text in Zeilen untereinander an derselben Stelle ausrichten', icon: 'alignLeft', hint: '&', kw: 'ausrichten ausrichtung ausrichtungspunkt tab tabulator tabstopp spalte &', run: (ed, b) => { const t = ed.textElOf(b); if (t) ed.insertAlignMark(t); } },
@@ -315,7 +316,11 @@ export class SlashMenu {
     const notes = (this.ed.host.listNotes ? this.ed.host.listNotes() : []);
     const hits = notes.map(n => ({ n, s: !q ? 1 : norm(n.name).includes(q) ? (norm(n.name).startsWith(q) ? 3 : 2) : 0 }))
       .filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 12);
-    for (const { n } of hits) out.push({ id: n.uuid, label: n.name, desc: n.path, icon: n.kind === 'pdf' ? 'pdf' : 'note', group: 'Einträge', run: () => this.insertLink(n) });
+    if (this.ed.host.pickDocument) {
+      const b = this.block;
+      out.push({ id: 'pick', label: 'Datei auswählen …', desc: 'Ordner durchblättern und suchen', icon: 'folder', group: 'Einträge und Dateien', run: () => pickAndInsertLink(this.ed, b) });
+    }
+    for (const { n } of hits) out.push({ id: n.uuid, label: n.name, desc: n.path, icon: iconFor(n), group: 'Einträge und Dateien', run: () => this.insertLink(n) });
     return out;
   }
 
@@ -410,18 +415,35 @@ export class SlashMenu {
   }
 
   insertLink(n) {
-    const ed = this.ed;
     const t = this.el;
     const sel = caret.getSelectionIn(t);
-    const pos = sel ? sel.start : 0;
-    const segs = htmlToSegs(t.innerHTML);
-    const [L, R] = splitSegs(segs, pos);
-    const link = { t: 'text', text: n.name, m: { a: itemLink(n.uuid) } };
-    const space = { t: 'text', text: ' ', m: {} };
-    ed.setTextHTML(this.block, segsToHTML(mergeSegs([...L, link, space, ...R])), { start: pos + n.name.length + 1 });
-    ed.dirtyText.add(this.block.id);
-    ed.changed();
+    insertLinkAt(this.ed, this.block, sel ? sel.start : 0, n);
   }
+}
+
+// Verweis an einer Stelle im Text einsetzen (Name als Linktext)
+function insertLinkAt(ed, b, pos, n) {
+  const t = ed.textElOf(b);
+  if (!t) return;
+  const segs = htmlToSegs(t.innerHTML);
+  const [L, R] = splitSegs(segs, pos);
+  const link = { t: 'text', text: n.name, m: { a: itemLink(n.uuid) } };
+  const space = { t: 'text', text: ' ', m: {} };
+  ed.setTextHTML(b, segsToHTML(mergeSegs([...L, link, space, ...R])), { start: pos + n.name.length + 1 });
+  ed.dirtyText.add(b.id);
+  ed.changed();
+}
+
+// Dateiauswahl öffnen (Ordner durchblättern oder suchen) und den Verweis an der Einfügemarke einsetzen
+export async function pickAndInsertLink(ed, b) {
+  const t = ed.textElOf(b);
+  if (!t || !ed.host.pickDocument) return;
+  const sel = caret.getSelectionIn(t);
+  const pos = sel ? sel.start : caret.textLength(t);
+  const n = await ed.host.pickDocument();
+  if (!n) { t.focus({ preventScroll: true }); caret.setSelectionIn(t, pos); return; }
+  ed.checkpoint();
+  insertLinkAt(ed, b, pos, n);
 }
 
 function isoPlus(days) {

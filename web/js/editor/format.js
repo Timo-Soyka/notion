@@ -8,6 +8,7 @@ import {
   htmlToMarkdown, markdownToHTML, applyMark, TEXT_COLORS, HIGHLIGHT_COLORS
 } from '../core/inline.js';
 import * as caret from './caret.js';
+import { iconFor } from '../core/filetypes.js';
 import { hydrateInlineMath, renderToString } from './render/katex.js';
 import { createField } from './mathfield.js';
 import { needsSource, repairLatex } from '../core/mathlines.js';
@@ -370,10 +371,15 @@ export function openLinkPopover(ed, el) {
     if (q && looksLikeURL(input.value.trim())) items.push({ label: 'Link setzen: ' + normalizeURL(input.value), icon: 'link', run: () => apply(normalizeURL(input.value)) });
     const notes = ed.host.listNotes ? ed.host.listNotes() : [];
     for (const n of notes.filter(n => !q || n.name.toLowerCase().includes(q)).slice(0, 8)) {
-      items.push({ label: n.name, desc: n.path, icon: n.kind === 'pdf' ? 'pdf' : 'note', run: () => apply(itemLink(n.uuid), n.name) });
+      items.push({ label: n.name, desc: n.path, icon: iconFor(n), run: () => apply(itemLink(n.uuid), n.name) });
     }
+    if (ed.host.pickDocument) items.push({ label: 'Datei auswählen …', desc: 'Ordner durchblättern und suchen', icon: 'folder', run: async () => {
+      pop.close();
+      const n = await ed.host.pickDocument();
+      if (n) apply(itemLink(n.uuid), n.name); else el.focus();
+    } });
     for (const hd of ed.headings().filter(x => !q || x.text.toLowerCase().includes(q)).slice(0, 5)) {
-      items.push({ label: hd.text, desc: 'Überschrift in diesem Eintrag', icon: 'heading', run: () => apply('#' + hd.id, hd.text) });
+      items.push({ label: hd.text, desc: 'Überschrift in diesem Eintrag', icon: 'heading', run: () => apply('#' + hd.slug, hd.text) });
     }
     if (current) items.push({ label: 'Link entfernen', icon: 'trash', danger: true, run: remove });
     list.innerHTML = '';
