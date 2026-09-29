@@ -5,8 +5,8 @@ Heft ist eine Mac-App für Hefteinträge im Stil von Notion. Man schreibt in Bl�
 ## Funktionen
 
 - **Blockeditor**: Überschriften, Listen, To-do-Listen, aufklappbare Abschnitte, Zitate, Code, Bilder, Fußnoten und Inhaltsverzeichnis. Zeilenumbruch ohne neuen Absatz mit Shift+Enter. Blöcke lassen sich in Spalten **nebeneinander** anordnen. Die Breiten gibt man als Verhältnis (1 : 2) oder als feste Werte (5 cm) an.
-- **Formeln**: Eingabefelder mit deutschen Kürzeln wie `wurzel`, `bruch`, `integral` oder `pfeil`. Einheiten wie cm oder kg werden automatisch erkannt, auch mit Potenzen. Mit `&` richtet man Zeilen aus, mit `||` setzt man einen Kommandostrich für Äquivalenzumformungen, und `~` erzeugt ein Wurzelzeichen ohne Radikand.
-- **Chemie**: Summenformeln, Reaktionsgleichungen und organische Moleküle als Strukturformel (aus SMILES).
+- **Formeln**: Eingabefelder mit deutschen Kürzeln wie `wurzel`, `bruch`, `integral` oder `pfeil`. Einheiten wie cm oder kg werden automatisch erkannt, auch mit Potenzen. Mit `&` richtet man Zeilen aus, mit `||` setzt man einen Kommandostrich für Äquivalenzumformungen, und `~` erzeugt ein Wurzelzeichen ohne Radikand. `stapel` schreibt zwei Zeilen übereinander (wie ein Bruch ohne Bruchstrich), `isotop` setzt Nuklide wie ¹⁴₆C – Massenzahl, Tab, Ordnungszahl, Tab, Element.
+- **Chemie**: Summenformeln, Reaktionsgleichungen und organische Moleküle als Strukturformel (aus SMILES). Kernreaktionen mit Isotopen (`^{235}_{92}U`) werden geprüft: Massen- und Ordnungszahlen links = rechts, und passt die Ordnungszahl zum Element?
 - **Graphen**: Funktionsgraphen mit frei einstellbarem Ausschnitt. Die Größe lässt sich durch Ziehen an der Ecke ändern.
 - **Tabellen**: Zellen lassen sich verbinden, einfärben und mit Kopfspalte versehen. Spaltenbreiten gehen als Verhältnis oder als feste Werte.
 - **Nummerierung**: Überschriften, Listen und Beschriftungen werden automatisch nummeriert. Man kann die Nummer auch von Hand anpassen und in den Einstellungen Standards festlegen.

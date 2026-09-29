@@ -25,7 +25,12 @@ export function loadMathLive() {
   return loading;
 }
 
-// Deutsche Kürzel: [Namen, LaTeX mit #? für die Kästchen, Beschreibung]
+// Isotop: leerer Sockel mit Hoch- und Tiefzahl, davor steht nichts.
+// MathLive springt hier zuerst nach unten – deshalb eigene Behandlung (siehe unten)
+const ISOTOPE = '{}^{#?}_{#?}';
+export const ISOTOPE_TEX = ISOTOPE;
+
+// Deutsche Kürzel: [Namen, LaTeX mit #? für die Kästchen, Beschreibung, Beispiel für die Liste]
 export const GERMAN_SHORTCUTS = [
   [['wurzel'], '\\sqrt{#?}', 'Wurzel'],
   [['nwurzel', 'ntewurzel'], '\\sqrt[#?]{#?}', 'n-te Wurzel'],
@@ -44,6 +49,8 @@ export const GERMAN_SHORTCUTS = [
   [['fallunterscheidung', 'faelle'], '\\begin{cases}#?&#?\\\\#?&#?\\end{cases}', 'Fallunterscheidung'],
   [['quer', 'periode'], '\\overline{#?}', 'Querstrich / Periode'],
   [['binom'], '\\binom{#?}{#?}', 'Binomialkoeffizient'],
+  [['stapel', 'uebereinander', 'übereinander'], '{#?\\atop#?}', 'Zwei Zeilen übereinander – wie ein Bruch ohne Bruchstrich', '{a\\atop b}'],
+  [['isotop', 'nuklid'], ISOTOPE, 'Isotop, z. B. ¹⁴₆C: Massenzahl, Tab, Ordnungszahl, Tab, Element', '{}^{14}_{6}C'],
   [['grad'], '^{\\circ}', 'Grad °'],
   [['unendlich'], '\\infty', '∞'],
   [['ungefaehr', 'ungefähr'], '\\approx', '≈'],
@@ -85,6 +92,7 @@ function shortcuts(defaults) {
   const out = { ...defaults };
   for (const k of DROP) delete out[k];
   for (const [names, tex] of GERMAN_SHORTCUTS) {
+    if (tex === ISOTOPE) continue;
     for (const n of names) {
       out[n] = tex;
       out[n.charAt(0).toUpperCase() + n.slice(1)] = tex;
@@ -140,11 +148,21 @@ export async function createField(opts = {}) {
   let fresh = null;
   // Text-Modus bewusst mit " begonnen (dann nicht automatisch verlassen)
   let quoteMode = false;
+  // Gerade eingefügtes Isotop: Tab springt Massenzahl → Ordnungszahl → Element
+  let iso = null;
   const emit = () => opts.onInput && opts.onInput(value(mf));
 
   mf.addEventListener('keydown', (e) => {
     if (opts.onKey && opts.onKey(e, mf)) { e.preventDefault(); e.stopImmediatePropagation(); fresh = null; return; }
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    if (e.key === 'Tab' && iso && plain && !e.shiftKey) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      isotopeTab(mf);
+      emit();
+      return;
+    }
+    if (iso && ['Escape', 'Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)) endIsotope();
     // Deutsche Tastatur: "^" ist eine Tottaste (wartet aufs nächste Zeichen) –
     // hier soll sie sofort in die Hochzahl springen.
     if (plain && !e.shiftKey && e.key === 'Dead' && /^(IntlBackslash|Backquote)$/.test(e.code)) {
@@ -208,6 +226,13 @@ export async function createField(opts = {}) {
         pre = mf.getValue(0, pos);
       }
       if (mf.mode !== 'text') quoteMode = false;
+      // „isotop“ bzw. „nuklid“ getippt → Nuklid-Vorlage, Einfügemarke in der Massenzahl
+      if (mf.mode === 'math' && (m = /(?:^|[^a-zA-Z\\])([iI]sotop|[nN]uklid)$/.exec(pre))) {
+        for (let k = 0; k < 6; k++) mf.executeCommand('deleteBackward');
+        insertIsotope(mf);
+        pos = mf.position;
+        pre = mf.getValue(0, pos);
+      }
       if (/\\sim(?![a-zA-Z])/.test(mf.getValue('latex')) && mf.mode !== 'text') {
         const fromEnd = mf.lastOffset - pos;
         for (let p = mf.lastOffset; p >= 1; p--) {
@@ -240,6 +265,38 @@ export async function createField(opts = {}) {
     } finally { busy = false; }
     emit();
   });
+  // Nuklid-Vorlage einfügen: MathLive wählt zuerst die Tiefzahl – wir starten oben
+  function insertIsotope(target) {
+    target.insert(ISOTOPE, { selectionMode: 'placeholder', silenceNotifications: true });
+    const holes = [];
+    const start = Math.max(1, target.position - 2);
+    for (let p = start; p <= Math.min(target.lastOffset, start + 4); p++) if (target.getValue(p - 1, p) === '\\placeholder{}') holes.push(p);
+    if (holes.length < 2) return;
+    target.selection = { ranges: [[holes[1] - 1, holes[1]]] };
+    // Sonst springt MathLive nach der ersten Ziffer aus der Hochzahl (praktisch bei x², hier nicht)
+    target.smartSuperscript = false;
+    iso = { sub: holes[0], step: 'mass' };
+  }
+
+  function endIsotope() {
+    iso = null;
+    mf.smartSuperscript = true;
+  }
+
+  function isotopeTab(target) {
+    if (iso.step === 'mass' && target.getValue(iso.sub - 1, iso.sub) === '\\placeholder{}') {
+      target.selection = { ranges: [[iso.sub - 1, iso.sub]] };
+      target.smartSuperscript = true;
+      iso.step = 'number';
+      return;
+    }
+    // Hinter das Nuklid – das Elementsymbol setzt die Anzeige später aufrecht
+    target.executeCommand('moveAfterParent');
+    endIsotope();
+  }
+  mf.addEventListener('blur', () => { if (iso) endIsotope(); });
+  mf.insertIsotope = () => { insertIsotope(mf); emit(); };
+
   mf.addEventListener('move-out', (e) => {
     if (opts.onMoveOut) { e.preventDefault(); opts.onMoveOut(e.detail && e.detail.direction, mf); }
   });

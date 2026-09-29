@@ -9,7 +9,7 @@
 import { h, esc, popover, menu } from '../../ui/ui.js';
 import { icon } from '../../ui/icons.js';
 import { renderDisplay, renderToString } from '../render/katex.js';
-import { createField, GERMAN_SHORTCUTS } from '../mathfield.js';
+import { createField, GERMAN_SHORTCUTS, ISOTOPE_TEX } from '../mathfield.js';
 import { widthDialog } from '../widthdialog.js';
 import { flexFor, fromPx, ratioOf, widthKind, formatWidth } from '../../core/widths.js';
 import { latexToLines, linesToLatex, cleanFieldLatex, needsSource, repairLatex, MARK_COLORS } from '../../core/mathlines.js';
@@ -219,7 +219,8 @@ async function mathFields(ed, b, atom, view) {
     const f = last || fields[0];
     if (!f) return;
     f.focus();
-    f.insert(tex.replace(/#\?/g, '\\placeholder{}'), { selectionMode: 'placeholder' });
+    if (f.insertIsotope && tex === ISOTOPE_TEX) f.insertIsotope();
+    else f.insert(tex.replace(/#\?/g, '\\placeholder{}'), { selectionMode: 'placeholder' });
     sync();
   }));
   const lines = latexToLines(repairLatex(b.tex));
@@ -263,8 +264,8 @@ function markIdFromColor(css) {
 // Liste der deutschen Kürzel (zum Nachschlagen und Anklicken)
 function shortcutHelp(anchor, onPick) {
   const list = h('div', { class: 'mf-help' });
-  for (const [names, tex, desc] of GERMAN_SHORTCUTS) {
-    const r = renderToString(tex.replace(/#\?/g, '\\square'), { display: false, mode: 'latex' });
+  for (const [names, tex, desc, example] of GERMAN_SHORTCUTS) {
+    const r = renderToString(example || tex.replace(/#\?/g, '\\square'), { display: false, mode: 'latex' });
     const row = h('button', { class: 'mf-help-row' },
       h('span', { class: 'k', text: names[0] }),
       h('span', { class: 'v', html: r.html || '' }),
@@ -318,7 +319,9 @@ const CHEM_SNIPPETS = [
   ['→ᵗ', ' ->[▯] ', 'Pfeil mit Beschriftung'], ['↑', ' ^ ', 'Gas entweicht'], ['↓', ' v ', 'Niederschlag'],
   ['+', ' + ', 'Plus'], ['(aq)', '(aq)', 'gelöst'], ['(s)', '(s)', 'fest'], ['(l)', '(l)', 'flüssig'], ['(g)', '(g)', 'gasförmig'],
   ['⁺', '^+', 'positive Ladung'], ['⁻', '^-', 'negative Ladung'], ['²⁺', '^{2+}', 'zweifach positiv'], ['e⁻', 'e^-', 'Elektron'],
-  ['·', ' * ', 'Kristallwasser'], ['ΔH', ' \\quad \\Delta H = ▯ kJ/mol', 'Reaktionsenthalpie']
+  ['·', ' * ', 'Kristallwasser'], ['ΔH', ' \\quad \\Delta H = ▯ kJ/mol', 'Reaktionsenthalpie'],
+  ['¹⁴₆C', '^{▯}_{}', 'Isotop/Nuklid: Massenzahl oben, Ordnungszahl unten – Tab springt ins nächste Feld'],
+  ['¹₀n', '^{1}_{0}n', 'Neutron'], ['⁴₂He', '^{4}_{2}He', 'Alphateilchen'], ['⁰₋₁e', '^{0}_{-1}e', 'Elektron (β⁻)'], ['γ', '\\gamma', 'Gammastrahlung']
 ];
 
 export const chem = {
@@ -347,9 +350,11 @@ export const chem = {
     const balanceBtn = h('button', { class: 'btn sm outline', 'data-tip': 'Stöchiometrische Faktoren automatisch einsetzen' }, icon('scale', 'sm'), 'Ausgleichen');
     const updateCheck = () => {
       const c = ta.value.trim() ? checkEquation(ta.value) : null;
-      check.className = 'chem-check' + (c ? (c.balanced ? ' ok' : ' bad') : '');
-      check.textContent = !c ? '' : c.balanced ? '✓ ausgeglichen'
+      check.className = 'chem-check' + (c ? (c.balanced && !(c.wrong && c.wrong.length) ? ' ok' : ' bad') : '');
+      check.textContent = !c ? '' : c.nuclear ? nuclearMessage(c) : c.balanced ? '✓ ausgeglichen'
         : c.diff.length ? `✗ stimmt nicht bei ${c.diff.join(', ')}` : '✗ Ladungen stimmen nicht';
+      // Kernreaktionen lassen sich nicht über Faktoren ausgleichen
+      balanceBtn.style.display = c && c.nuclear ? 'none' : '';
       balanceBtn.disabled = !c || c.balanced;
     };
     balanceBtn.addEventListener('mousedown', (e) => {
@@ -363,7 +368,7 @@ export const chem = {
     });
     atom.append(h('div', { class: 'atom-panel' }, ta, h('div', { class: 'panel-row' }, bar),
       h('div', { class: 'panel-row' },
-        h('span', { class: 'hint grow', html: 'Zahlen hinter Elementen werden automatisch tiefgestellt (H2O → H₂O). <kbd>Enter</kbd> fertig' }),
+        h('span', { class: 'hint grow', html: 'Zahlen hinter Elementen werden automatisch tiefgestellt (H2O → H₂O). Isotope: ^{14}_{6}C · <kbd>Tab</kbd> nächstes Feld · <kbd>Enter</kbd> fertig' }),
         check, balanceBtn), err));
     ta.addEventListener('input', () => {
       autosize(ta);
@@ -375,10 +380,34 @@ export const chem = {
       ed.changed({ soft: true });
     });
     updateCheck();
+    // Tab: ins nächste leere Feld springen (z. B. von der Massen- zur Ordnungszahl)
+    ta.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+      const rest = ta.value.slice(ta.selectionEnd);
+      const m = /\{\}/.exec(rest);
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (m) ta.selectionStart = ta.selectionEnd = ta.selectionEnd + m.index + 1;
+      else {
+        // kein leeres Feld mehr: hinter die aktuelle Klammer
+        const close = rest.indexOf('}');
+        if (close >= 0 && !/[{]/.test(rest.slice(0, close))) ta.selectionStart = ta.selectionEnd = ta.selectionEnd + close + 1;
+      }
+    }, true);
     panelKeys(ed, b, ta);
     requestAnimationFrame(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; });
   }
 };
+
+// Kernreaktion: Massen- und Ordnungszahlen links = rechts? Passt die Ordnungszahl zum Element?
+function nuclearMessage(c) {
+  if (c.wrong.length) return '✗ ' + c.wrong.map(w => `${w.sym} hat die Ordnungszahl ${w.expected}, nicht ${w.Z}`).join(' · ');
+  if (c.balanced) return '✓ Massen- und Ordnungszahlen stimmen';
+  const parts = [];
+  if (c.mass[0] !== c.mass[1]) parts.push(`Massenzahlen ${c.mass[0]} ≠ ${c.mass[1]}`);
+  if (c.charge[0] !== c.charge[1]) parts.push(`Ordnungszahlen ${c.charge[0]} ≠ ${c.charge[1]}`);
+  return '✗ ' + parts.join(' · ');
+}
 
 // ---------------------------------------------------------------------------
 // Code

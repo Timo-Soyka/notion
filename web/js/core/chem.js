@@ -8,6 +8,8 @@
 //
 // Bewusst ohne Abhängigkeiten, damit es in Node getestet werden kann.
 
+import { hasNuclide, checkNuclear } from './isotopes.js';
+
 // ---------------------------------------------------------------------------
 // Atommassen (IUPAC, gerundet) und Standard-Bindigkeiten
 // ---------------------------------------------------------------------------
@@ -941,8 +943,14 @@ export function balanceEquation(src) {
   return { text: `${L} ${am[1]} ${R}`, coefficients: ints.map(Number) };
 }
 
-// Prüft, ob eine Gleichung stimmt (für einen Hinweis im Editor)
+// Prüft, ob eine Gleichung stimmt (für einen Hinweis im Editor).
+// Kernreaktionen (mit Nukliden wie ^{14}_{6}C) werden über Massen- und
+// Ordnungszahlen geprüft – dort ändern sich ja die Elemente.
 export function checkEquation(src) {
+  if (hasNuclide(src)) {
+    const n = checkNuclear(src);
+    return n ? { ...n, nuclear: true, diff: [] } : null;
+  }
   try {
     const text = String(src);
     const am = /\s*(->\[[^\]]*\](?:\[[^\]]*\])?|<=>\[[^\]]*\](?:\[[^\]]*\])?|<=>|<->|->|→|⇌)\s*/.exec(text);

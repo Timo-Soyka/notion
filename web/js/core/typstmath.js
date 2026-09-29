@@ -52,7 +52,9 @@ const MULTI_MAP = {
 };
 
 export function isLatex(src) {
-  return /\\[a-zA-Z]/.test(src);
+  // \befehl, oder geschweifte Klammern an Hoch-/Tiefzahlen (x^{12}, {}^{14}_{6}C) –
+  // Typst schreibt dort runde Klammern, geschweifte sind in Typst Mengenklammern
+  return /\\[a-zA-Z]|[\^_]\{|\{\}/.test(src);
 }
 
 // Wandelt, falls nötig, in LaTeX um. mode: 'auto' | 'typst' | 'latex'
@@ -436,6 +438,21 @@ const FUNCTIONS = {
   },
   frac: (rows) => ({ tex: `\\frac{${arg(rows, 0)}}{${arg(rows, 1)}}`, kind: 'frac', tall: true }),
   binom: (rows) => ({ tex: `\\binom{${arg(rows, 0)}}{${arg(rows, 1)}}`, kind: 'atom', tall: true }),
+  // attach(C, tl: 14, bl: 6): Hoch- und Tiefzahlen an allen Ecken – so schreibt Typst Isotope (¹⁴₆C)
+  attach: (rows) => {
+    const [base = '', ...rest] = rows[0] || [];
+    const at = {};
+    for (const a of rest) {
+      const m = /^(?:\\(?:mathrm|operatorname)\{)?(tl|bl|tr|br|t|b)\}?\s*:\s*([\s\S]*)$/.exec(a.trim());
+      if (m) at[m[1]] = m[2].trim();
+    }
+    let tex = base;
+    if (at.t) tex = `\\overset{${at.t}}{${tex}}`;
+    if (at.b) tex = `\\underset{${at.b}}{${tex}}`;
+    const pre = at.tl || at.bl ? `{}${at.tl ? `^{${at.tl}}` : ''}${at.bl ? `_{${at.bl}}` : ''}` : '';
+    const post = `${at.tr ? `^{${at.tr}}` : ''}${at.br ? `_{${at.br}}` : ''}`;
+    return { tex: pre + (post ? `{${tex}}${post}` : tex), kind: 'atom', tall: !!(at.t || at.b) };
+  },
   abs: (rows) => ({ tex: `\\left| ${arg(rows, 0)} \\right|`, kind: 'atom' }),
   norm: (rows) => ({ tex: `\\left\\| ${arg(rows, 0)} \\right\\|`, kind: 'atom' }),
   floor: (rows) => ({ tex: `\\left\\lfloor ${arg(rows, 0)} \\right\\rfloor`, kind: 'atom' }),

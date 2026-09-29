@@ -5,6 +5,7 @@
 
 import { toLatex } from '../../core/typstmath.js';
 import { repairLatex } from '../../core/mathlines.js';
+import { alignPrescripts } from '../../core/isotopes.js';
 
 const cache = new Map();
 const MAX = 800;
@@ -23,7 +24,7 @@ function fixComma(tex) {
 }
 
 export function texFor(src, mode = 'auto') {
-  return fixComma(repairLatex(toLatex(src, mode)));
+  return fixComma(alignPrescripts(repairLatex(toLatex(src, mode))));
 }
 
 export function renderToString(src, { display = false, mode = 'auto' } = {}) {
