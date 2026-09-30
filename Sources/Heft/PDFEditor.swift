@@ -6,9 +6,9 @@ import Vision
 //
 // PDFKit (dieselbe Technik wie in Vorschau) zeigt die Seiten an; die Werkzeuge
 // erzeugen echte PDF-Anmerkungen: Text zum Ausfüllen, Stift, Textmarker,
-// Unter-/Durchstreichen, Formen. Gespeichert wird automatisch kurz nach jeder
-// Änderung – über DEVONthink, damit die Datei in der Datenbank sauber
-// aktualisiert und synchronisiert wird.
+// Unter-/Durchstreichen, Formen. Gespeichert wird automatisch, sobald man kurz
+// innehält, und beim Verlassen des Blatts – über DEVONthink, damit die Datei
+// in der Datenbank sauber aktualisiert und synchronisiert wird.
 
 final class PDFEditorView: NSView {
     let uuid: String
@@ -25,10 +25,15 @@ final class PDFEditorView: NSView {
     private var dirty = false
     private var saveWork: DispatchWorkItem?
     private var saving = false
+    private var lastSave = Date.distantPast
+    private var firstUnsaved: Date?
+    // Dateigröße in Bytes – bestimmt, wie oft automatisch gespeichert wird
+    private var fileBytes: Int
 
-    init(uuid: String, document: PDFDocument, host: MainWindowController) {
+    init(uuid: String, document: PDFDocument, fileBytes: Int, host: MainWindowController) {
         self.uuid = uuid
         self.document = document
+        self.fileBytes = fileBytes
         self.host = host
         super.init(frame: .zero)
         wantsLayer = true
@@ -46,11 +51,16 @@ final class PDFEditorView: NSView {
         pdfView.editor = self
         addSubview(pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
+        NotificationCenter.default.addObserver(self, selector: #selector(appDeactivated), name: NSApplication.didResignActiveNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(macWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
 
     @objc private func pageChanged() {
         guard let page = pdfView.currentPage else { return }
@@ -84,36 +94,115 @@ final class PDFEditorView: NSView {
 
     func changed() {
         dirty = true
+        if firstUnsaved == nil { firstUnsaved = Date() }
         host?.emit("pdf-state", ["uuid": uuid, "saved": false, "dirty": true])
-        saveWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in self?.saveNow() }
-        saveWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
+        scheduleSave()
     }
 
-    func saveNow() {
+    // MARK: - Speichern
+    //
+    // Jede Sicherung schreibt das ganze PDF neu – bei eingescannten Blättern
+    // Dutzende MB. Früher geschah das 1,5 s nach jedem Strich; beim Ausfüllen
+    // eines großen Scans kamen so in einer halben Stunde über 2 GB zusammen.
+    // Jetzt wird gespeichert, wenn man kurz innehält, bei großen Dateien aber
+    // nur alle paar Minuten. Sofort gespeichert wird beim Verlassen des Blatts,
+    // beim Wechsel in ein anderes Programm, vor dem Ruhezustand und beim Beenden.
+
+    private var megabytes: Double { Double(fileBytes) / 1_048_576 }
+    // Pause nach der letzten Änderung: 3 s, bei großen Dateien bis 10 s
+    private var savePause: TimeInterval { min(10, 3 + megabytes / 5) }
+    // Mindestabstand zwischen zwei Sicherungen: 8 s je MB (30 MB → 4 min), höchstens 10 min
+    private var saveSpacing: TimeInterval { min(600, max(5, megabytes * 8)) }
+    // Wer ohne Pause weiterschreibt, bekommt trotzdem spätestens nach einer
+    // Minute eine Sicherung (bzw. sobald der Mindestabstand um ist)
+    private let saveMaxWait: TimeInterval = 60
+
+    private func scheduleSave() {
+        let now = Date()
+        let earliest = lastSave.addingTimeInterval(saveSpacing)
+        var due = max(now.addingTimeInterval(savePause), earliest)
+        if let first = firstUnsaved { due = min(due, max(first.addingTimeInterval(saveMaxWait), earliest)) }
+        planAutosave(after: due.timeIntervalSince(now))
+    }
+
+    private func planAutosave(after delay: TimeInterval) {
         saveWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.autosave() }
+        saveWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay), execute: w)
+    }
+
+    // Nicht mitten ins Tippen hinein speichern: der Textkasten landete sonst
+    // leer und ausgeblendet in der Datei, und das Eingabefeld ginge zu
+    private func autosave() {
+        guard dirty else { return }
+        if pdfView.isEditingText { planAutosave(after: savePause); return }
+        saveNow()
+    }
+
+    @objc private func appDeactivated() { autosave() }
+
+    @objc private func macWillSleep() { saveNow() }
+
+    func saveNow() {
         pdfView.endTextEditing(commit: true)
-        guard dirty, let data = document.dataRepresentation() else { return }
+        saveWork?.cancel()
+        saveWork = nil
+        guard dirty else { return }
+        let tmp = Store.shared.tempFile("arbeitsblatt.pdf")
+        // write(to:) schreibt direkt in die Datei. dataRepresentation() hielte bei
+        // jedem Aufruf eine komplette Kopie des PDFs im Speicher fest, die PDFKit
+        // nie wieder freigibt – bei großen Scans wuchs Heft so auf mehrere GB.
+        guard document.write(to: tmp) else {
+            try? FileManager.default.removeItem(at: tmp)
+            host?.emit("toast", ["message": "Arbeitsblatt nicht gespeichert: Die Datei ließ sich nicht schreiben.", "type": "error"])
+            return
+        }
         dirty = false
+        firstUnsaved = nil
+        lastSave = Date()
+        if let size = (try? tmp.resourceValues(forKeys: [.fileSizeKey]))?.fileSize { fileBytes = size }
         saving = true
         host?.emit("pdf-state", ["uuid": uuid, "saved": false, "saving": true])
-        let tmp = Store.shared.tempFile("arbeitsblatt.pdf")
-        do { try data.write(to: tmp) } catch { return }
         let uuid = self.uuid
-        DEVONthink.shared.async({ try DEVONthink.shared.replaceData(uuid: uuid, with: tmp) }) { [weak self] result in
+        Self.beginSaving(uuid, document, fileBytes)
+        DEVONthink.shared.async({ try DEVONthink.shared.replaceData(uuid: uuid, with: tmp) }) { [weak self, weak host = self.host] result in
             try? FileManager.default.removeItem(at: tmp)
             DispatchQueue.main.async {
+                Self.endSaving(uuid)
                 SchemeHandler.shared.invalidate(uuid: uuid)
                 self?.saving = false
                 switch result {
-                case .success: self?.host?.emit("pdf-state", ["uuid": uuid, "saved": true, "dirty": self?.dirty ?? false])
+                // Auch wenn das Blatt schon verlassen wurde: eingebettete Seiten im Eintrag auffrischen
+                case .success: host?.emit("pdf-state", ["uuid": uuid, "saved": true, "dirty": self?.dirty ?? false])
                 case .failure(let e):
-                    self?.dirty = true
-                    self?.host?.emit("toast", ["message": "Arbeitsblatt nicht gespeichert: \(e.localizedDescription)", "type": "error"])
+                    if let me = self {
+                        me.dirty = true
+                        if me.firstUnsaved == nil { me.firstUnsaved = Date() }
+                    }
+                    host?.emit("toast", ["message": "Arbeitsblatt nicht gespeichert: \(e.localizedDescription)", "type": "error"])
                 }
             }
         }
+    }
+
+    // Stände, die gerade zu DEVONthink unterwegs sind. Öffnet man das Blatt
+    // vorher wieder, geht es mit diesem Stand weiter – die Datei in DEVONthink
+    // ist dann ja noch die alte, und der nächste Speichervorgang würde die
+    // letzten Änderungen sonst überschreiben.
+    private static var inFlight: [String: (document: PDFDocument, bytes: Int, count: Int)] = [:]
+
+    static func documentBeingSaved(_ uuid: String) -> (document: PDFDocument, bytes: Int)? {
+        inFlight[uuid].map { ($0.document, $0.bytes) }
+    }
+
+    private static func beginSaving(_ uuid: String, _ document: PDFDocument, _ bytes: Int) {
+        inFlight[uuid] = (document, bytes, (inFlight[uuid]?.count ?? 0) + 1)
+    }
+
+    private static func endSaving(_ uuid: String) {
+        guard let e = inFlight[uuid] else { return }
+        inFlight[uuid] = e.count > 1 ? (e.document, e.bytes, e.count - 1) : nil
     }
 
     // MARK: - Aktionen aus der Werkzeugleiste
@@ -250,6 +339,8 @@ final class HeftPDFView: PDFView {
     private var editingAnnotation: PDFAnnotation?
     private var editingPage: PDFPage?
     private var selectedAnnotation: PDFAnnotation?
+
+    var isEditingText: Bool { textField != nil }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -526,6 +617,7 @@ final class HeftPDFView: PDFView {
             return
         }
         let old = ann.contents ?? ""
+        let oldBounds = ann.bounds
         ann.contents = text
         // Kasten an den Text anpassen
         let font = ann.font ?? NSFont.systemFont(ofSize: 14)
@@ -538,7 +630,8 @@ final class HeftPDFView: PDFView {
         } else if old != text {
             ed.undoManagerForPDF.registerUndo(withTarget: ed) { e in ann.contents = old; e.changed() }
         }
-        ed.changed()
+        // Nur hineingeklickt und wieder heraus: nichts zu speichern
+        if wasNew || old != text || ann.bounds != oldBounds { ed.changed() }
     }
 
     override func keyDown(with event: NSEvent) {

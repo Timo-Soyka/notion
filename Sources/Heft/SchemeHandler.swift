@@ -121,12 +121,16 @@ final class SchemeHandler: NSObject, WKURLSchemeHandler {
         DEVONthink.shared.forgetPath(uuid)
     }
 
+    // Über Data laden, nicht per URL – so bleibt die Datei im
+    // DEVONthink-Paket nicht geöffnet, wenn DEVONthink sie ersetzt.
+    func fileData(for uuid: String) throws -> Data {
+        let path = try DEVONthink.shared.path(for: uuid)
+        return try Data(contentsOf: URL(fileURLWithPath: path))
+    }
+
     func document(for uuid: String) throws -> PDFDocument {
         if let d = docCache.object(forKey: uuid as NSString) { return d }
-        let path = try DEVONthink.shared.path(for: uuid)
-        // Über Data laden, nicht per URL – so bleibt die Datei im
-        // DEVONthink-Paket nicht geöffnet, wenn DEVONthink sie ersetzt.
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let data = try fileData(for: uuid)
         guard let doc = PDFDocument(data: data) else { throw DTError.script("PDF kann nicht gelesen werden") }
         docCache.setObject(doc, forKey: uuid as NSString)
         return doc

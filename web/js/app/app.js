@@ -150,7 +150,8 @@ export class App {
     on('tree-changed', () => this.sidebar.renderTree());
     on('toast', ({ message, type }) => toast(message, { type }));
     // Arbeitsblatt im PDF-Editor gespeichert → eingebettete Seiten neu laden
-    on('pdf-state', (st) => { if (st && st.saved && st.uuid) touchAsset(st.uuid); });
+    // (die letzte Sicherung kommt oft erst an, wenn der Eintrag schon wieder offen ist)
+    on('pdf-state', (st) => { if (st && st.saved && st.uuid) { touchAsset(st.uuid); if (this.editor) this.editor.refreshAssets(); } });
     // Bild oder PDF außerhalb geändert (DEVONthink, Vorschau …) → im offenen Eintrag neu laden
     this.lib.onChange(() => { if (this.editor && this.lib.changedFiles && this.lib.changedFiles.length) this.editor.refreshAssets(); });
   }

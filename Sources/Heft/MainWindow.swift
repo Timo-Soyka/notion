@@ -138,15 +138,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BridgeHo
 
     func openPDF(uuid: String, rect: CGRect) throws -> Int {
         closePDF()
-        let doc = try SchemeHandler.shared.document(for: uuid)
-        // Eigene Kopie, damit die Vorschaubilder unabhängig bleiben
-        guard let data = doc.dataRepresentation(), let copy = PDFDocument(data: data) else { throw DTError.script("PDF kann nicht geöffnet werden") }
-        let editor = PDFEditorView(uuid: uuid, document: copy, host: self)
+        let document: PDFDocument
+        let bytes: Int
+        if let pending = PDFEditorView.documentBeingSaved(uuid) {
+            // Gerade erst verlassen, die Sicherung läuft noch – mit diesem Stand weiter
+            (document, bytes) = pending
+        } else {
+            // Eigene Kopie aus der Datei, damit die Vorschaubilder unabhängig bleiben.
+            // Nicht per dataRepresentation(): PDFKit gibt diesen Speicher nie frei.
+            let data = try SchemeHandler.shared.fileData(for: uuid)
+            guard let copy = PDFDocument(data: data) else { throw DTError.script("PDF kann nicht geöffnet werden") }
+            (document, bytes) = (copy, data.count)
+        }
+        let editor = PDFEditorView(uuid: uuid, document: document, fileBytes: bytes, host: self)
         editor.frame = rect
         window?.contentView?.addSubview(editor, positioned: .above, relativeTo: webView)
         pdfEditor = editor
         window?.makeFirstResponder(editor.pdfView)
-        return copy.pageCount
+        return document.pageCount
     }
 
     func closePDF() {
