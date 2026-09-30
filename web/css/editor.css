@@ -294,12 +294,17 @@
 .plot-svg .curve.dashed { stroke-dasharray: 7 5; }
 .plot-svg .curve-label { font-size: 14px; font-style: italic; font-family: var(--font-serif); font-weight: 600; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
 .plot-svg .pt { stroke: var(--bg); stroke-width: 1.5; }
+.plot-svg .end-dot { stroke-width: 1.8; }
+.plot-svg .end-dot.open { fill: var(--bg); }
+.plot-svg .area { fill-opacity: 0.18; stroke: none; }
+.plot-svg .area-edge { stroke-width: 1.2; stroke-dasharray: 3 3; opacity: 0.8; }
 .plot-svg .pt-label { font-size: 11.5px; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
 .plot-svg .hover-line { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 3 3; }
 .plot-svg .frame { fill: none; stroke: var(--border); }
 .plot-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin-top: 6px; font-size: 0.92em; }
 .plot-legend .item { display: inline-flex; align-items: center; gap: 6px; }
 .plot-legend .sw { width: 16px; height: 3px; border-radius: 2px; }
+.plot-legend .sw.area { height: 12px; width: 14px; opacity: 0.35; border-radius: 3px; }
 .plot-coords { position: absolute; top: 10px; left: 12px; padding: 2px 6px; border-radius: 4px; background: var(--popover); box-shadow: var(--shadow-pop); font-size: 12px; font-family: var(--font-ui); pointer-events: none; }
 .fn-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .fn-row .color-dot { width: 14px; height: 14px; border-radius: 50%; flex: none; border: 0; padding: 0; }

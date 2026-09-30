@@ -19,6 +19,7 @@ node tests/imagemodel.test.mjs >/dev/null
 node tests/filetypes.test.mjs >/dev/null
 node tests/imagesize.test.mjs >/dev/null
 node tests/isotopes.test.mjs >/dev/null
+node tests/plotfeatures.test.mjs >/dev/null
 python3 scripts/fix-invisible.py web >/dev/null
 
 echo "▸ Swift (Release)"

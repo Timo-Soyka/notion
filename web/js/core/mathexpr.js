@@ -1,8 +1,9 @@
 // Rechenausdrücke für Funktionsgraphen.
 //
 // Eingabe so, wie man sie im Unterricht schreibt: "2x^2 - 3", "0,5x + 1",
-// "sin x", "√x", "f'(x)". Daraus wird ein Syntaxbaum, der sich schnell
-// auswerten (Closure statt eval) und als LaTeX für die Legende ausgeben lässt.
+// "sin x", "√x", "f'(x)", "∫_0^3 f(x) dx", "tangente(f, 1)" und mit
+// Einschränkung "x^2 für x < 3". Daraus wird ein Syntaxbaum, der sich schnell
+// auswerten (Closure statt eval), ableiten und als LaTeX ausgeben lässt.
 
 const FUNCS = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
@@ -21,7 +22,7 @@ const MULTI_ARG = {
   root: (n, x) => nthRoot(x, n), log: (b, x) => Math.log(x) / Math.log(b),
   mod: (a, b) => ((a % b) + b) % b
 };
-const CONSTS = { pi: Math.PI, 'π': Math.PI, e: Math.E, tau: 2 * Math.PI };
+const CONSTS = { pi: Math.PI, 'π': Math.PI, e: Math.E, tau: 2 * Math.PI, '∞': Infinity };
 
 function nthRoot(x, n) {
   // Ungerade Wurzeln aus negativen Zahlen sind reell (∛-8 = -2)
@@ -84,9 +85,10 @@ function lex(src) {
       continue;
     }
     if (c === '√') { toks.push({ k: 'id', v: 'sqrt', sym: true }); i++; continue; }
-    if ('+-*/^()|,;!\''.includes(c)) { toks.push({ k: 'op', v: c }); i++; continue; }
-    if (c === '[' ) { toks.push({ k: 'op', v: '(' }); i++; continue; }
-    if (c === ']' ) { toks.push({ k: 'op', v: ')' }); i++; continue; }
+    if (c === '∞') { toks.push({ k: 'id', v: '∞' }); i++; continue; }
+    if ('+-*/^()|,;!\'∫_'.includes(c)) { toks.push({ k: 'op', v: c }); i++; continue; }
+    if (c === '[' || c === '{') { toks.push({ k: 'op', v: '(' }); i++; continue; }
+    if (c === ']' || c === '}') { toks.push({ k: 'op', v: ')' }); i++; continue; }
     throw new Error(`Unbekanntes Zeichen „${c}“`);
   }
   return toks;
@@ -98,7 +100,7 @@ function lex(src) {
 // ---------------------------------------------------------------------------
 
 class P {
-  constructor(toks, known) { this.t = toks; this.i = 0; this.known = known || {}; }
+  constructor(toks, known, opts = {}) { this.t = toks; this.i = 0; this.known = known || {}; this.v = opts.variable || 'x'; this.inIntegral = null; }
   peek() { return this.t[this.i]; }
   next() { return this.t[this.i++]; }
   isOp(v) { const t = this.peek(); return t && t.k === 'op' && t.v === v; }
@@ -120,6 +122,9 @@ class P {
   startsAtom() {
     const t = this.peek();
     if (!t) return false;
+    // "dx" beendet den Term unter dem Integral
+    if (this.inIntegral && t.k === 'id' && t.v === 'd' + this.inIntegral) return false;
+    if (t.k === 'op' && t.v === '∫') return true;
     if (t.k === 'num' || t.k === 'id') return true;
     return t.k === 'op' && (t.v === '(' || (t.v === '|' && !this.inAbs));
   }
@@ -173,11 +178,82 @@ class P {
       this.expect('|');
       return { t: 'call', f: 'abs', args: [e] };
     }
+    if (t.k === 'op' && t.v === '∫') return this.integral();
     if (t.k === 'id') return this.ident(t);
     throw new Error(`Unerwartet: „${t.v}“`);
   }
+
+  // Grenze am Integral: Zahl, Name oder Klammer, auch mit Vorzeichen (∫_-1^2)
+  bound() {
+    if (this.isOp('-')) { this.next(); return { t: 'neg', a: this.bound() }; }
+    const t = this.next();
+    if (!t) throw new Error('Grenze fehlt');
+    if (t.k === 'num') return { t: 'num', v: t.v, raw: t.raw };
+    if (t.k === 'op' && t.v === '(') { const e = this.add(); this.expect(')'); return e; }
+    if (t.k === 'id') {
+      if (t.v === this.v || t.v === 'x') return { t: 'var', n: t.v };
+      if (t.v in CONSTS) return { t: 'const', n: t.v };
+      if (t.v.length === 1) return { t: 'param', n: t.v };
+      // "_0^3" wird zu den Token 0, ^, 3 – "pi2" o. Ä. als Ganzes lesen
+      this.i--;
+      return this.postfix();
+    }
+    throw new Error('Grenze nicht lesbar');
+  }
+
+  // ∫_a^b Term dx  ·  ∫(Term, a, b)  ·  integral(Term, a, b)
+  integral() {
+    if (this.isOp('(')) {
+      const args = this.args();
+      if (args.length !== 3) throw new Error('Integral: ∫(Term, von, bis)');
+      return { t: 'integral', a: args[0], lo: args[1], hi: args[2], v: 'x' };
+    }
+    let lo = null, hi = null;
+    for (let k = 0; k < 2; k++) {
+      if (this.isOp('_') && !lo) { this.next(); lo = this.bound(); }
+      else if (this.isOp('^') && !hi) { this.next(); hi = this.bound(); }
+    }
+    if (!lo || !hi) throw new Error('Integral braucht Grenzen: ∫_0^3 f(x) dx');
+    // Integrationsvariable aus "dx", "dt" … ablesen
+    let v = 'x';
+    for (let k = this.i; k < this.t.length; k++) {
+      const t = this.t[k];
+      const m = t.k === 'id' && /d([a-z])$/.exec(t.v);
+      if (m) { v = m[1]; break; }
+    }
+    const outer = { v: this.v, inIntegral: this.inIntegral };
+    this.v = v;
+    this.inIntegral = v;
+    const body = this.add();
+    this.v = outer.v;
+    this.inIntegral = outer.inIntegral;
+    const d = this.peek();
+    if (!d || d.k !== 'id' || d.v !== 'd' + v) throw new Error(`„d${v}“ am Ende des Integrals fehlt`);
+    this.next();
+    return { t: 'integral', a: body, lo, hi, v };
+  }
   ident(t) {
     let name = t.v;
+    // "xdx" unter dem Integral: x · dx
+    if (this.inIntegral && name.length > 2 && name.endsWith('d' + this.inIntegral)) {
+      this.t.splice(this.i, 0, { k: 'id', v: 'd' + this.inIntegral });
+      name = name.slice(0, -2);
+      t = { k: 'id', v: name };
+    }
+    if ((name === 'int' || name === 'integral') && (this.isOp('(') || this.isOp('_') || this.isOp('^'))) return this.integral();
+    // tangente(f, 1), normale(f, 1) – vor der Zerlegung in tan · gente
+    if (/^(tangente|tangent|normale|normal)$/i.test(name) && this.isOp('(')) {
+      this.next();
+      const ft = this.next();
+      if (!ft || ft.k !== 'id') throw new Error('Tangente: tangente(f, 1)');
+      let d = 0;
+      while (this.isOp("'")) { this.next(); d++; }
+      if (!(this.isOp(',') || this.isOp(';'))) throw new Error('Tangente: tangente(f, 1)');
+      this.next();
+      const x0 = this.add();
+      this.expect(')');
+      return { t: 'tangent', f: ft.v, d, x0, normal: /^normal/i.test(name) };
+    }
     // Ableitung f'(x), f''(x)
     let d = 0;
     while (this.isOp("'")) { this.next(); d++; }
@@ -191,6 +267,7 @@ class P {
       return { t: 'call', f: name, args: [this.pow()] };
     }
     if (name in CONSTS) return { t: 'const', n: name };
+    if (name === this.v) return { t: 'var', n: name };
     if (name === 'x') return { t: 'var', n: 'x' };
     // Mehrbuchstabige Folge: bekannte Funktion am Anfang? ("sinx" → sin(x))
     for (const fn of Object.keys(FUNCS).sort((a, b) => b.length - a.length)) {
@@ -216,7 +293,10 @@ class P {
 // Zerlegt "f(x) = x^2", "g: x^2", "y = 2x" oder nur "x^2".
 export function splitDefinition(src) {
   const s = String(src || '').trim();
-  let m = /^([\p{L}][\p{L}\d_]*)\s*\(\s*x\s*\)\s*=\s*([\s\S]*)$/u.exec(s);
+  // Fläche: "A = ∫_0^3 f(x) dx"
+  let m = /^([\p{L}][\p{L}\d_]*)\s*=\s*((?:∫|int\b|integral\b)[\s\S]*)$/u.exec(s);
+  if (m) return { name: m[1], body: m[2], area: true };
+  m = /^([\p{L}][\p{L}\d_]*)\s*\(\s*x\s*\)\s*=\s*([\s\S]*)$/u.exec(s);
   if (m) return { name: m[1], body: m[2] };
   m = /^([\p{L}][\p{L}\d_]*)\s*:\s*([\s\S]*)$/u.exec(s);
   if (m) return { name: m[1], body: m[2] };
@@ -229,10 +309,10 @@ export function splitDefinition(src) {
   return { name: null, body: s };
 }
 
-export function parseExpr(src, known) {
+export function parseExpr(src, known, opts) {
   const toks = lex(normalizeInput(String(src)));
   if (!toks.length) throw new Error('Leer');
-  return new P(toks, known).parse();
+  return new P(toks, known, opts).parse();
 }
 
 function fact(n) {
@@ -254,15 +334,27 @@ function gamma(z) {
   return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * x;
 }
 
+// Wie tief Funktionen einander aufrufen dürfen. Ruft sich eine Funktion
+// (auch über Umwege) selbst auf, bricht die Auswertung hier ab, statt
+// endlos weiterzulaufen – WebKit meldet eine solche Rekursion nicht als Fehler.
+const MAX_DEPTH = 40;
+let depth = 0;
+
 // Übersetzt den Baum in eine schnelle Funktion x ↦ y.
-// env.funcs: Name → Funktion (für f(x) in g(x)), env.params: Name → Zahl
+// env.funcs: Name → Funktion (für f(x) in g(x)), env.params: Name → Zahl,
+// env.deriv(name, n): n-te Ableitung von name als Funktion (falls bekannt)
 export function compile(node, env = {}) {
   const funcs = env.funcs || {};
   const params = env.params || {};
+  const outer = env.outer || null;
+  const variable = env.variable || null;
   const c = (n) => {
     switch (n.t) {
       case 'num': { const v = n.v; return () => v; }
-      case 'var': return (x) => x;
+      case 'var':
+        // Im Integral: die äußere Variable (∫_0^x x·t dt) kommt von außen
+        if (outer && variable && n.n && n.n !== variable) return () => outer.x;
+        return (x) => x;
       case 'const': { const v = CONSTS[n.n]; return () => v; }
       case 'param': {
         const name = n.n;
@@ -298,9 +390,14 @@ export function compile(node, env = {}) {
           const a0 = args[0];
           return (x) => {
             const f = funcs[name];
-            if (!f) return NaN;
-            const u = a0(x);
-            return d ? derivative(f, u, d) : f(u);
+            if (!f || depth > MAX_DEPTH) return NaN;
+            depth++;
+            try {
+              const u = a0(x);
+              if (!d) return f(u);
+              const g = env.deriv && env.deriv(name, d);
+              return g ? g(u) : derivative(f, u, d);
+            } finally { depth--; }
           };
         }
         if (n.f === 'fact') { const a = args[0]; return (x) => fact(a(x)); }
@@ -312,10 +409,56 @@ export function compile(node, env = {}) {
         const a = args[0];
         return (x) => f(a(x));
       }
+      case 'integral': {
+        const lo = c(n.lo), hi = c(n.hi);
+        const box = { x: 0 };
+        const g = compile(n.a, { ...env, variable: n.v, outer: box });
+        return (x) => {
+          if (depth > MAX_DEPTH) return NaN;
+          depth++;
+          try { box.x = x; return integrate(g, lo(x), hi(x)); } finally { depth--; }
+        };
+      }
+      case 'tangent': {
+        const name = n.f, d = n.d || 0, x0 = c(n.x0), normal = n.normal;
+        return (x) => {
+          const line = tangentLine(funcs[name], x0(x), { d, deriv: env.deriv && ((k) => env.deriv(name, k)), normal });
+          return line ? line.m * x + line.b : NaN;
+        };
+      }
     }
     throw new Error('Unbekannter Knoten');
   };
   return c(node);
+}
+
+// Bestimmtes Integral (Simpsonregel); a > b ergibt das negative Integral
+export function integrate(f, a, b, n = 200) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return NaN;
+  if (a === b) return 0;
+  const h = (b - a) / n;
+  let sum = f(a) + f(b);
+  for (let k = 1; k < n; k++) sum += f(a + k * h) * (k % 2 ? 4 : 2);
+  const r = sum * h / 3;
+  return Number.isFinite(r) ? r : NaN;
+}
+
+// Tangente (bzw. Normale) an f in x0: y = m·x + b, Berührpunkt (x0|y0)
+export function tangentLine(f, x0, { d = 0, deriv = null, normal = false } = {}) {
+  if (!f || !Number.isFinite(x0) || depth > MAX_DEPTH) return null;
+  depth++;
+  try {
+    const at = (k) => {
+      const g = deriv && deriv(k);
+      if (g) return g(x0);
+      return k ? derivative(f, x0, k) : f(x0);
+    };
+    const y0 = at(d), m0 = at(d + 1);
+    if (!Number.isFinite(y0) || !Number.isFinite(m0)) return null;
+    let m = m0;
+    if (normal) { if (Math.abs(m0) < 1e-12) return null; m = -1 / m0; }
+    return { m, b: y0 - m * x0, x0, y0 };
+  } finally { depth--; }
 }
 
 export function derivative(f, x, order = 1) {
@@ -329,10 +472,16 @@ export function derivative(f, x, order = 1) {
 export function usedNames(node, out = new Set()) {
   if (!node) return out;
   if (node.t === 'call' && node.user) out.add(node.f);
+  if (node.t === 'tangent') out.add(node.f);
   if (node.t === 'param') out.add(node.n);
-  for (const k of ['a', 'b']) if (node[k]) usedNames(node[k], out);
+  for (const k of ['a', 'b', 'lo', 'hi', 'x0']) if (node[k]) usedNames(node[k], out);
   if (node.args) node.args.forEach(a => usedNames(a, out));
   return out;
+}
+
+// Nur die Funktionen, die ein Baum aufruft (ohne Parameter)
+export function usedFunctions(node, known) {
+  return [...usedNames(node)].filter(n => known[n]);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,12 +493,15 @@ const PREC = { '+': 1, '-': 1, '*': 2, '/': 2, '^': 4 };
 export function toTex(node) {
   const t = (n, parentPrec = 0) => {
     switch (n.t) {
-      case 'num': return formatNumberTex(n.v, n.raw);
-      case 'var': return 'x';
-      case 'const': return n.n === 'pi' || n.n === 'π' ? '\\pi' : n.n === 'tau' ? '\\tau' : 'e';
+      case 'num': return n.v === Infinity ? '\\infty' : n.v === -Infinity ? '-\\infty' : formatNumberTex(n.v, n.raw);
+      case 'var': return n.n || 'x';
+      case 'const': return n.n === 'pi' || n.n === 'π' ? '\\pi' : n.n === 'tau' ? '\\tau' : n.n === '∞' ? '\\infty' : 'e';
+      case 'integral': return `\\int_{${t(n.lo)}}^{${t(n.hi)}} ${t(n.a)} \\,\\mathrm{d}${n.v}`;
+      case 'tangent': return `\\operatorname{${n.normal ? 'Normale' : 'Tangente'}}\\left(${n.f}${"'".repeat(n.d || 0)}, ${t(n.x0)}\\right)`;
       case 'param': return n.n;
       case 'paren': return `\\left(${t(n.a)}\\right)`;
-      case 'neg': return wrap('-' + t(n.a, 3), 3, parentPrec);
+      // -2x und -x^2 brauchen keine Klammer, -(x + 1) schon
+      case 'neg': return wrap('-' + t(n.a, n.a.t === 'bin' && n.a.op !== '+' && n.a.op !== '-' ? 2 : 3), 3, parentPrec);
       case 'bin': {
         const p = PREC[n.op];
         if (n.op === '/') return `\\frac{${t(n.a)}}{${t(n.b)}}`;
@@ -395,6 +547,340 @@ export function toTex(node) {
 
 function wrap(s, p, parent) {
   return p < parent ? `\\left(${s}\\right)` : s;
+}
+
+// ---------------------------------------------------------------------------
+// Ableiten (für die Legende: f'(x) = 2x) und Vereinfachen
+// ---------------------------------------------------------------------------
+
+const num = (v) => ({ t: 'num', v });
+const isNum = (n, v) => n.t === 'num' && (v === undefined || Math.abs(n.v - v) < 1e-12);
+const hasVar = (n, v) => {
+  if (!n) return false;
+  if (n.t === 'var') return (n.n || 'x') === v;
+  if (n.t === 'call' && n.user) return n.args.some(a => hasVar(a, v));
+  if (n.t === 'integral') return hasVar(n.lo, v) || hasVar(n.hi, v) || (n.v !== v && hasVar(n.a, v));
+  if (n.t === 'tangent') return true;
+  return ['a', 'b'].some(k => n[k] && hasVar(n[k], v)) || (n.args || []).some(a => hasVar(a, v));
+};
+const call = (f, a) => ({ t: 'call', f, args: [a] });
+const bin = (op, a, b) => ({ t: 'bin', op, a, b });
+const mul = (a, b) => bin('*', a, b);
+
+// Variable ersetzen (Hauptsatz: (∫_0^x f(t) dt)' = f(x))
+function substitute(n, v, by) {
+  if (!n || typeof n !== 'object') return n;
+  if (n.t === 'var' && (n.n || 'x') === v) return by;
+  const out = { ...n };
+  for (const k of ['a', 'b', 'lo', 'hi', 'x0']) if (n[k]) out[k] = substitute(n[k], v, by);
+  if (n.args) out.args = n.args.map(a => substitute(a, v, by));
+  return out;
+}
+
+// Ableitung nach x als neuer Baum; wirft, wenn etwas nicht ableitbar ist
+export function differentiate(n, v = 'x') {
+  const d = (m) => differentiate(m, v);
+  if (!hasVar(n, v)) return num(0);
+  switch (n.t) {
+    case 'var': return num(1);
+    case 'paren': return d(n.a);
+    case 'neg': return { t: 'neg', a: d(n.a) };
+    case 'bin': {
+      const { a, b } = n;
+      switch (n.op) {
+        case '+': case '-': return bin(n.op, d(a), d(b));
+        case '*': return bin('+', mul(d(a), b), mul(a, d(b)));
+        case '/':
+          if (!hasVar(b, v)) return bin('/', d(a), b);
+          return bin('/', bin('-', mul(d(a), b), mul(a, d(b))), bin('^', b, num(2)));
+        case '^':
+          if (!hasVar(b, v)) return mul(mul(b, bin('^', a, bin('-', b, num(1)))), d(a));
+          if (!hasVar(a, v)) return mul(mul(n, call('ln', a)), d(b));
+          return mul(n, bin('+', mul(d(b), call('ln', a)), bin('/', mul(b, d(a)), a)));
+      }
+      break;
+    }
+    case 'call': {
+      const u = n.args[0];
+      if (n.user) return mul({ ...n, d: (n.d || 0) + 1 }, d(u));
+      const du = d(u);
+      switch (n.f) {
+        case 'sin': return mul(call('cos', u), du);
+        case 'cos': return mul({ t: 'neg', a: call('sin', u) }, du);
+        case 'tan': return bin('/', du, bin('^', call('cos', u), num(2)));
+        case 'exp': return mul(n, du);
+        case 'ln': return bin('/', du, u);
+        case 'log': case 'lg': if (n.args.length === 1) return bin('/', du, mul(u, call('ln', num(10)))); break;
+        case 'sqrt': case 'wurzel': return bin('/', du, mul(num(2), call('sqrt', u)));
+        case 'abs': case 'betrag': return bin('/', mul(u, du), call('abs', u));
+        case 'asin': case 'arcsin': return bin('/', du, call('sqrt', bin('-', num(1), bin('^', u, num(2)))));
+        case 'acos': case 'arccos': return { t: 'neg', a: bin('/', du, call('sqrt', bin('-', num(1), bin('^', u, num(2))))) };
+        case 'atan': case 'arctan': return bin('/', du, bin('+', num(1), bin('^', u, num(2))));
+        case 'sinh': return mul(call('cosh', u), du);
+        case 'cosh': return mul(call('sinh', u), du);
+      }
+      break;
+    }
+    case 'integral':
+      // Hauptsatz: obere Grenze x, untere fest
+      if (n.hi.t === 'var' && (n.hi.n || 'x') === v && !hasVar(n.lo, v)) return substitute(n.a, n.v, { t: 'var', n: v });
+      break;
+  }
+  throw new Error('nicht ableitbar');
+}
+
+const roundNum = (v) => { const r = Number(v.toPrecision(12)); return Object.is(r, -0) ? 0 : r; };
+
+// Vereinfachen: Zahlen ausrechnen, ·1, +0, ^1 weglassen, Vorzeichen nach vorn
+export function simplify(n) {
+  if (!n || typeof n !== 'object') return n;
+  switch (n.t) {
+    case 'paren': return simplify(n.a);
+    case 'neg': {
+      const a = simplify(n.a);
+      if (a.t === 'num') return num(roundNum(-a.v));
+      if (a.t === 'neg') return a.a;
+      return { t: 'neg', a };
+    }
+    case 'call': {
+      const args = n.args.map(simplify);
+      if ((n.f === 'ln') && args[0].t === 'const' && args[0].n === 'e') return num(1);
+      if ((n.f === 'ln') && isNum(args[0], 1)) return num(0);
+      return { ...n, args };
+    }
+    case 'bin': {
+      let a = simplify(n.a), b = simplify(n.b);
+      const op = n.op;
+      if (a.t === 'num' && b.t === 'num') {
+        const r = op === '+' ? a.v + b.v : op === '-' ? a.v - b.v : op === '*' ? a.v * b.v : op === '/' ? a.v / b.v : Math.pow(a.v, b.v);
+        if (Number.isFinite(r) && (op !== '/' || Number.isInteger(roundNum(r * 1e6)))) return num(roundNum(r));
+      }
+      switch (op) {
+        case '+':
+          if (isNum(a, 0)) return b;
+          if (isNum(b, 0)) return a;
+          if (b.t === 'neg') return simplify(bin('-', a, b.a));
+          if (b.t === 'num' && b.v < 0) return bin('-', a, num(-b.v));
+          if (a.t === 'neg') return simplify(bin('-', b, a.a));
+          return bin('+', a, b);
+        case '-':
+          if (isNum(b, 0)) return a;
+          if (isNum(a, 0)) return simplify({ t: 'neg', a: b });
+          if (b.t === 'neg') return simplify(bin('+', a, b.a));
+          if (b.t === 'num' && b.v < 0) return bin('+', a, num(-b.v));
+          return bin('-', a, b);
+        case '*': {
+          // Faktoren sammeln: Zahlen multiplizieren, Vorzeichen nach vorn
+          const factors = [];
+          let coef = 1;
+          const take = (m) => {
+            if (m.t === 'bin' && m.op === '*') { take(m.a); take(m.b); return; }
+            if (m.t === 'neg') { coef = -coef; take(m.a); return; }
+            if (m.t === 'num') { coef *= m.v; return; }
+            factors.push(m);
+          };
+          take(a); take(b);
+          coef = roundNum(coef);
+          if (coef === 0) return num(0);
+          if (!factors.length) return num(coef);
+          // links anfangen (2·a·x statt 2·(a·x)), damit keine Klammern nötig sind
+          if (Math.abs(coef) !== 1) factors.unshift(num(Math.abs(coef)));
+          const prod = factors.reduce((x, y) => ({ t: 'bin', op: '*', a: x, b: y, implicit: true }));
+          return coef < 0 ? { t: 'neg', a: prod } : prod;
+        }
+        case '/':
+          if (isNum(a, 0)) return num(0);
+          if (isNum(b, 1)) return a;
+          if (a.t === 'neg') return { t: 'neg', a: bin('/', a.a, b) };
+          if (a.t === 'num' && a.v < 0) return { t: 'neg', a: bin('/', num(-a.v), b) };
+          return bin('/', a, b);
+        case '^':
+          if (isNum(b, 1)) return a;
+          if (isNum(b, 0)) return num(1);
+          return bin('^', a, b);
+      }
+      return { ...n, a, b };
+    }
+  }
+  return n;
+}
+
+// Polynome (nur Zahlen, x, +, −, ·, ganze Potenzen) ausmultiplizieren und
+// zusammenfassen: (x−1) − (x+1) → −2
+function toPoly(n) {
+  const add = (p, q, k = 1) => { const r = { ...p }; for (const d in q) r[d] = (r[d] || 0) + k * q[d]; return r; };
+  const mulP = (p, q) => { const r = {}; for (const i in p) for (const j in q) r[+i + +j] = (r[+i + +j] || 0) + p[i] * q[j]; return r; };
+  switch (n.t) {
+    case 'num': return Number.isFinite(n.v) ? { 0: n.v } : null;
+    case 'var': return (n.n || 'x') === 'x' ? { 1: 1 } : null;
+    case 'paren': return toPoly(n.a);
+    case 'neg': { const p = toPoly(n.a); return p && add({}, p, -1); }
+    case 'bin': {
+      const p = toPoly(n.a);
+      if (!p) return null;
+      if (n.op === '^') {
+        const e = toPoly(n.b);
+        if (!e || Object.keys(e).some(d => d !== '0')) return null;
+        const k = e[0] || 0;
+        if (!Number.isInteger(k) || k < 0 || k > 6) return null;
+        let r = { 0: 1 };
+        for (let i = 0; i < k; i++) r = mulP(r, p);
+        return r;
+      }
+      const q = toPoly(n.b);
+      if (!q) return null;
+      if (n.op === '+') return add(p, q);
+      if (n.op === '-') return add(p, q, -1);
+      if (n.op === '*') return mulP(p, q);
+      if (n.op === '/' && Object.keys(q).every(d => d === '0') && q[0]) return add({}, p, 1 / q[0]);
+      return null;
+    }
+  }
+  return null;
+}
+
+function polyTree(p) {
+  const degs = Object.keys(p).map(Number).filter(d => Math.abs(roundNum(p[d])) > 1e-12).sort((a, b) => b - a);
+  if (!degs.length) return num(0);
+  let out = null;
+  for (const d of degs) {
+    const c = roundNum(p[d]);
+    const pow = d === 0 ? null : d === 1 ? { t: 'var', n: 'x' } : bin('^', { t: 'var', n: 'x' }, num(d));
+    const mag = Math.abs(c);
+    const term = !pow ? num(mag) : mag === 1 ? pow : { t: 'bin', op: '*', a: num(mag), b: pow, implicit: true };
+    if (!out) out = c < 0 ? { t: 'neg', a: term } : term;
+    else out = bin(c < 0 ? '-' : '+', out, term);
+  }
+  return out;
+}
+
+function tidy(n) {
+  const p = toPoly(n);
+  if (p) return polyTree(p);
+  if (n.t === 'bin' && (n.op === '+' || n.op === '-' || n.op === '*')) return simplify({ ...n, a: tidy(n.a), b: tidy(n.b) });
+  if (n.t === 'bin' && n.op === '/') return simplify({ ...n, a: tidy(n.a) });
+  if (n.t === 'neg') return simplify({ t: 'neg', a: tidy(n.a) });
+  return n;
+}
+
+// n-te Ableitung als lesbarer Baum (oder null, wenn nicht ableitbar)
+export function derive(tree, order = 1) {
+  try {
+    let t = tree;
+    for (let k = 0; k < order; k++) t = tidy(simplify(differentiate(t)));
+    return t;
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Einschränkungen: "x^2 für x < 3", "x^2, 0 ≤ x ≤ 3", "x^2, x ∈ [0; 3["
+// ---------------------------------------------------------------------------
+
+const REL = /(<=|>=|=<|=>|≤|≥|⩽|⩾|<|>)/;
+const relInfo = (op) => ({ lt: /^(<|<=|=<|≤|⩽)$/.test(op), incl: /=|≤|≥|⩽|⩾/.test(op) });
+
+// Grenze lesen: Zahl, Term oder ±∞ – als Baum (wird später mit Parametern ausgewertet)
+function boundTree(src) {
+  const s = String(src).trim().replace(/^\+/, '');
+  const inf = /^(-)?\s*(∞|oo|inf|infinity|unendlich)$/i.exec(s);
+  if (inf) return num(inf[1] ? -Infinity : Infinity);
+  const t = parseExpr(s);
+  if (hasVar(t, 'x')) throw new Error('Grenze enthält x');
+  return t;
+}
+
+// → { lo, hi, loIncl, hiIncl } (lo/hi als Bäume, null = offen) oder null
+export function parseCondition(text) {
+  let s = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!s) return null;
+  // Intervall: x ∈ [0; 3[,  D = ]0; ∞[,  [0, 3]
+  const iv = /^(?:x\s*(?:∈|in|el)\s*|D(?:_?f)?\s*=\s*)?([\[\]\(])\s*(.+?)\s*([\[\]\)])$/i.exec(s);
+  if (iv) {
+    const inner = iv[2];
+    let parts = inner.includes(';') ? inner.split(';') : inner.includes('|') ? inner.split('|') : inner.split(/,(?!\d)|,\s+/);
+    if (parts.length !== 2) return null;
+    try {
+      return { lo: boundTree(parts[0]), hi: boundTree(parts[1]), loIncl: iv[1] === '[', hiIncl: iv[3] === ']' };
+    } catch { return null; }
+  }
+  // Mehrere Bedingungen: "x > 0 und x < 3", "x > 0, x < 3"
+  const conj = s.split(/\s+(?:und|and)\s+|\s*(?:&&|∧)\s*|\s*;\s*|,\s+(?=[^\d])/i);
+  const out = { lo: null, hi: null, loIncl: false, hiIncl: false };
+  const setLo = (t, incl) => { out.lo = t; out.loIncl = incl; };
+  const setHi = (t, incl) => { out.hi = t; out.hiIncl = incl; };
+  for (const part of conj) {
+    const bits = part.split(REL).map(x => x.trim());
+    if (bits.length !== 3 && bits.length !== 5) return null;
+    const xi = bits.findIndex((b, k) => k % 2 === 0 && /^x$/.test(b));
+    if (xi < 0) return null;
+    try {
+      for (let k = 1; k < bits.length; k += 2) {
+        const left = bits[k - 1], right = bits[k + 1], r = relInfo(bits[k]);
+        if (right === 'x' && left !== 'x') {
+          // a < x  → untere Grenze,  a > x → obere
+          if (r.lt) setLo(boundTree(left), r.incl); else setHi(boundTree(left), r.incl);
+        } else if (left === 'x' && right !== 'x') {
+          if (r.lt) setHi(boundTree(right), r.incl); else setLo(boundTree(right), r.incl);
+        } else return null;
+      }
+    } catch { return null; }
+  }
+  return out.lo || out.hi ? out : null;
+}
+
+// Term und Einschränkung trennen: "x^2 für x < 3" → { body: "x^2", cond }
+export function splitCondition(body) {
+  const s = String(body || '');
+  const tries = [];
+  // {x < 3} am Ende (wie bei Desmos)
+  const brace = /\{([^{}]*)\}\s*$/.exec(s);
+  if (brace) tries.push([brace.index, brace[1]]);
+  const word = /\s+(?:für|fuer|falls|wenn|mit)\s+/gi;
+  let m;
+  while ((m = word.exec(s))) tries.push([m.index, s.slice(m.index + m[0].length)]);
+  // Komma oder Semikolon außerhalb von Klammern
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === ';' || (c === ',' && !/\d/.test(s[i + 1] || '')))) tries.push([i, s.slice(i + 1)]);
+  }
+  tries.sort((a, b) => a[0] - b[0]);
+  for (const [at, rest] of tries) {
+    const cond = parseCondition(rest);
+    if (cond) { cond.text = rest.trim(); return { body: s.slice(0, at).trim(), cond }; }
+  }
+  return { body: s, cond: null };
+}
+
+// Grenzen mit Parametern ausrechnen
+export function evalCondition(cond, params) {
+  if (!cond) return null;
+  const val = (t, def) => {
+    if (!t) return def;
+    try { const v = compile(t, { params })(0); return Number.isNaN(v) ? def : v; } catch { return def; }
+  };
+  return { lo: val(cond.lo, -Infinity), hi: val(cond.hi, Infinity), loIncl: cond.loIncl, hiIncl: cond.hiIncl };
+}
+
+export function inInterval(iv, x) {
+  if (!iv) return true;
+  if (x < iv.lo || (x === iv.lo && !iv.loIncl && Number.isFinite(iv.lo))) return false;
+  if (x > iv.hi || (x === iv.hi && !iv.hiIncl && Number.isFinite(iv.hi))) return false;
+  return true;
+}
+
+// Für die Legende: "0 ≤ x < 3"
+export function conditionTex(cond) {
+  if (!cond) return '';
+  const lo = cond.lo && !(cond.lo.t === 'num' && cond.lo.v === -Infinity) ? toTex(cond.lo) : null;
+  const hi = cond.hi && !(cond.hi.t === 'num' && cond.hi.v === Infinity) ? toTex(cond.hi) : null;
+  const rel = (incl) => (incl ? ' \\le ' : ' < ');
+  if (lo && hi) return `${lo}${rel(cond.loIncl)}x${rel(cond.hiIncl)}${hi}`;
+  if (hi) return `x${rel(cond.hiIncl)}${hi}`;
+  if (lo) return `x${cond.loIncl ? ' \\ge ' : ' > '}${lo}`;
+  return '';
 }
 
 function formatNumberTex(v, raw) {

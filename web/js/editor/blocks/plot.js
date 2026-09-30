@@ -8,7 +8,8 @@
 import { h, esc } from '../../ui/ui.js';
 import { icon } from '../../ui/icons.js';
 import {
-  parseExpr, compile, toTex, splitDefinition, formatNumber, findRoots, findExtrema, findInflections, usedNames
+  parseExpr, compile, toTex, splitDefinition, formatNumber, findRoots, findExtrema, findInflections, usedNames, usedFunctions,
+  splitCondition, evalCondition, inInterval, conditionTex, derive, integrate, tangentLine
 } from '../../core/mathexpr.js';
 import { renderToString } from '../render/katex.js';
 import { captionEl, mediaBar } from './atoms.js';
@@ -26,46 +27,250 @@ export function defaultPlotConfig() {
 // ---------------------------------------------------------------------------
 // Funktionen vorbereiten
 // ---------------------------------------------------------------------------
+//
+// Jede Zeile ist eine Funktion ("f(x) = x^2"), ein Parameter ("a = 2"), eine
+// senkrechte Gerade ("x = 3"), eine Ableitung ("f'(x)"), eine Tangente
+// ("tangente(f, 1)") oder eine Fläche ("∫_0^3 f(x) dx"). Funktionen dürfen
+// eingeschränkt sein ("x^2 für x < 3"); mehrere Zeilen mit demselben Namen
+// und Einschränkung ergeben eine abschnittsweise definierte Funktion.
+
+const isIntegral = (s) => /^\s*(∫|int\b|integral\b)/.test(s);
+
+function piecewise(pieces) {
+  if (pieces.length === 1 && !pieces[0].iv) return pieces[0].fn;
+  return (x) => {
+    for (const p of pieces) if (inInterval(p.iv, x)) return p.fn(x);
+    return NaN;
+  };
+}
+
+// Funktionsnamen, die in Termen aufgerufen werden (f(…), f'(…), tangente(f, …))
+function calledNames(body) {
+  const out = new Set();
+  for (const m of String(body || '').matchAll(/(\p{L})'*\s*\(/gu)) out.add(m[1]);
+  for (const m of String(body || '').matchAll(/(?:tangente?|normale?)\s*\(\s*(\p{L})/giu)) out.add(m[1]);
+  return out;
+}
 
 export function prepare(config) {
   const entries = (config.functions || []).filter(f => f && String(f.expr || '').trim());
   const params = {};
-  const known = {};
-  const defs = [];
-  let auto = 0;
-  const usedAuto = new Set(entries.map(e => splitDefinition(e.expr).name).filter(Boolean));
-  entries.forEach((e, i) => {
-    const d = splitDefinition(e.expr);
-    if (d.param) { defs.push({ ...d, entry: e, index: i, param: true }); return; }
-    let name = d.name;
-    if (!name && !d.vertical) {
-      while (usedAuto.has(AUTO_NAMES[auto])) auto++;
-      name = AUTO_NAMES[auto++] || 'f' + i;
+  const rows = entries.map((entry, index) => {
+    const d = splitDefinition(entry.expr);
+    const row = { ...d, entry, index };
+    if (d.param || d.vertical) return row;
+    const sc = splitCondition(d.body);
+    row.body = sc.body;
+    row.cond = sc.cond;
+    if (!row.name) {
+      const dm = /^(\p{L})('+)\(\s*x\s*\)$/u.exec(row.body.trim());
+      if (dm) row.derivOf = { f: dm[1], d: dm[2].length };
     }
-    if (name) known[name] = true;
-    defs.push({ ...d, name, entry: e, index: i });
+    return row;
   });
-  // Parameter (a = 2) zuerst auswerten
-  for (const d of defs.filter(x => x.param)) {
-    try { params[d.name] = compile(parseExpr(d.body), { params })(0); d.value = params[d.name]; }
-    catch (err) { d.error = err.message; }
+
+  // Automatische Namen: keine, die schon vergeben oder in einem Term benutzt sind
+  // (sonst würde sich "g(x)" beim Eintippen selbst aufrufen)
+  const taken = new Set();
+  for (const r of rows) {
+    if (r.name && !r.area) taken.add(r.name);
+    for (const n of calledNames(r.body)) taken.add(n);
   }
-  const funcs = {};
-  const out = [];
-  let colorIdx = 0;
-  for (const d of defs) {
-    if (d.param) { out.push(d); continue; }
-    const color = d.entry.color || PLOT_COLORS[colorIdx++ % PLOT_COLORS.length];
+  const pick = (pref) => {
+    for (const n of [...pref, ...AUTO_NAMES]) if (!taken.has(n)) { taken.add(n); return n; }
+    return null;
+  };
+  for (const r of rows) {
+    if (r.param || r.vertical || r.name || r.derivOf || r.area || isIntegral(r.body)) continue;
+    r.name = /^\s*tangente?\s*\(/i.test(r.body) ? pick(['t']) : /^\s*normale?\s*\(/i.test(r.body) ? pick(['n']) : pick([]);
+  }
+
+  // Parameter (a = 2) zuerst auswerten
+  for (const r of rows.filter(x => x.param)) {
+    try { params[r.name] = compile(parseExpr(r.body), { params })(0); r.value = params[r.name]; }
+    catch (err) { r.error = err.message; }
+  }
+
+  const known = {};
+  for (const r of rows) if (r.name && !r.param && !r.area) known[r.name] = true;
+  for (const r of rows) {
+    if (r.param) continue;
     try {
-      const tree = parseExpr(d.body, known);
-      const fn = compile(tree, { funcs, params });
-      if (d.name) funcs[d.name] = fn;
-      out.push({ ...d, tree, fn, color, deps: usedNames(tree) });
-    } catch (err) {
-      out.push({ ...d, error: err.message, color });
+      r.tree = parseExpr(r.body, known);
+      if (r.area || (r.tree.t === 'integral' && !hasX(r.tree.lo) && !hasX(r.tree.hi))) r.kind = 'area';
+      else if (r.tree.t === 'tangent') r.kind = 'tangent';
+      else r.kind = 'fn';
+    } catch (err) { r.error = err.message; }
+  }
+
+  // Unbekannte Namen: "g(x)" ohne Funktion g, Tippfehler bei Parametern
+  for (const r of rows) {
+    if (!r.tree) continue;
+    const missing = [...usedNames(r.tree)].filter(n => !known[n] && !(n in params) && n !== 'x' && n !== 't');
+    if (r.kind === 'tangent' && !known[r.tree.f]) missing.push(r.tree.f);
+    if (missing.length) {
+      const n = missing[0];
+      r.error = `„${n}“ ist noch nicht festgelegt – z. B. ${n}(x) = … oder ${n} = 2 in einer eigenen Zeile`;
+      r.tree = null;
     }
   }
-  return { list: out, funcs, params };
+
+  // Kreisverweise (f ruft g, g ruft f) abfangen
+  const deps = {};
+  for (const r of rows) {
+    if (!r.tree || !r.name || r.kind === 'area') continue;
+    deps[r.name] = deps[r.name] || new Set();
+    for (const n of usedFunctions(r.tree, known)) deps[r.name].add(n);
+  }
+  const inCycle = (start) => {
+    const seen = new Set();
+    const stack = [...(deps[start] || [])];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n === start) return true;
+      if (seen.has(n)) continue;
+      seen.add(n);
+      stack.push(...(deps[n] || []));
+    }
+    return false;
+  };
+  for (const r of rows) {
+    if (!r.tree || !r.name || r.kind === 'area' || !inCycle(r.name)) continue;
+    const others = [...(deps[r.name] || [])].filter(n => n !== r.name);
+    r.error = deps[r.name].has(r.name) ? `${r.name} darf sich nicht selbst enthalten` : `${r.name} und ${others.join(', ')} verweisen aufeinander`;
+    r.tree = null;
+  }
+
+  // Funktionen übersetzen – abschnittsweise, wenn alle Zeilen eines Namens eingeschränkt sind
+  const funcs = {};
+  const defs = {};
+  const derivCache = new Map();
+  const env = { funcs, params };
+  const derivPieces = (name, k) => {
+    const key = name + ':' + k;
+    if (derivCache.has(key)) return derivCache.get(key);
+    derivCache.set(key, null);
+    const pcs = defs[name];
+    let comp = null;
+    if (pcs) {
+      comp = pcs.map(pc => { const t = derive(pc.tree, k); return t && { fn: compile(t, env), iv: pc.iv, tree: t }; });
+      if (!comp.every(Boolean)) comp = null;
+    }
+    derivCache.set(key, comp);
+    return comp;
+  };
+  env.deriv = (name, k) => { const comp = derivPieces(name, k); return comp ? piecewise(comp) : null; };
+  const byName = new Map();
+  for (const r of rows) {
+    if (!r.tree || r.kind !== 'fn' && r.kind !== 'tangent' || !r.name) continue;
+    if (!byName.has(r.name)) byName.set(r.name, []);
+    byName.get(r.name).push(r);
+  }
+  for (const r of rows) {
+    if (!r.tree || r.kind === 'area') continue;
+    try {
+      r.raw = compile(r.tree, env);
+      r.iv = evalCondition(r.cond, params);
+      r.fn = r.iv ? piecewise([{ fn: r.raw, iv: r.iv }]) : r.raw;
+    } catch (err) { r.error = err.message; r.fn = null; }
+  }
+  for (const [name, list] of byName) {
+    const ok = list.filter(r => r.fn);
+    if (!ok.length) continue;
+    if (list.length > 1 && list.every(r => r.cond)) {
+      funcs[name] = piecewise(ok.map(r => ({ fn: r.raw, iv: r.iv })));
+      defs[name] = ok.map(r => ({ tree: r.tree, iv: r.iv }));
+      for (const r of ok) r.piece = true;
+    } else {
+      const last = ok[ok.length - 1];
+      funcs[name] = last.fn;
+      if (last.kind === 'fn') defs[name] = [{ tree: last.tree, iv: last.iv }];
+    }
+  }
+
+  // Kurven: eine je Funktion (Abschnitte zusammen), Ableitungen, Tangenten, senkrechte Geraden
+  const curves = [];
+  let colorIdx = 0;
+  const colorOf = {};
+  const nextColor = (entry) => entry.color || PLOT_COLORS[colorIdx++ % PLOT_COLORS.length];
+  for (const r of rows) {
+    if (r.param || r.kind === 'area') continue;
+    if (!r.fn && !r.error) continue;
+    const group = r.piece ? curves.find(c => c.name === r.name && c.pieces) : null;
+    if (group) { r.color = group.color; group.rows.push(r); continue; }
+    const color = nextColor(r.entry);
+    r.color = color;
+    if (!r.fn) continue;
+    const label = r.derivOf ? r.derivOf.f + "'".repeat(r.derivOf.d) : r.name;
+    const c = { name: r.name, label, color, rows: [r], vertical: !!r.vertical, kind: r.kind, pieces: r.piece || undefined };
+    if (r.name && !colorOf[r.name]) colorOf[r.name] = color;
+    curves.push(c);
+  }
+  for (const c of curves) {
+    // Ableitung einer eingeschränkten/abschnittsweisen Funktion: Abschnitte einzeln
+    // zeichnen – an den Grenzen offen, dort ist sie meist nicht ableitbar
+    const r0 = c.rows[0];
+    if (r0.derivOf && !r0.cond) {
+      const comp = derivPieces(r0.derivOf.f, r0.derivOf.d);
+      if (comp && comp.some(pc => pc.iv)) {
+        c.rows = comp.map(pc => ({ ...r0, raw: pc.fn, fn: piecewise([pc]), iv: pc.iv && { ...pc.iv, loIncl: false, hiIncl: false }, derived: true }));
+      }
+    }
+    c.fn = c.pieces ? funcs[c.name] : c.rows.length > 1 ? piecewise(c.rows.map(r => ({ fn: r.raw, iv: r.iv }))) : c.rows[0].fn;
+    c.hidden = c.rows.every(r => r.entry.hidden);
+    if (c.kind === 'tangent') {
+      const t = c.rows[0].tree;
+      let x0 = NaN;
+      try { x0 = compile(t.x0, env)(0); } catch { /* bleibt NaN */ }
+      c.touch = tangentLine(funcs[t.f], x0, { d: t.d, deriv: (k) => env.deriv(t.f, k), normal: t.normal });
+    }
+  }
+
+  // Flächen unter/zwischen Graphen: ∫_a^b f(x) dx, ∫_a^b (f(x) − g(x)) dx
+  const areas = [];
+  for (const r of rows) {
+    if (r.kind !== 'area' || !r.tree) continue;
+    const t = r.tree;
+    let lo, hi;
+    try { lo = compile(t.lo, env)(0); hi = compile(t.hi, env)(0); } catch (err) { r.error = err.message; continue; }
+    const integrand = t.a.t === 'paren' ? t.a.a : t.a;
+    const userFn = (n) => n && n.t === 'call' && n.user && !n.d && n.args[0].t === 'var' ? n.f : null;
+    let top, bottom = () => 0, color, outline = false;
+    const f = userFn(integrand);
+    const diff = integrand.t === 'bin' && integrand.op === '-' ? [userFn(integrand.a), userFn(integrand.b)] : null;
+    const g = compile(t.a, { ...env, variable: t.v, outer: { x: 0 } });
+    if (f && funcs[f]) { top = funcs[f]; color = colorOf[f]; }
+    else if (diff && diff[0] && diff[1] && funcs[diff[0]] && funcs[diff[1]]) { top = funcs[diff[0]]; bottom = funcs[diff[1]]; color = colorOf[diff[0]]; }
+    else { top = g; outline = true; }
+    color = r.entry.color || color || nextColor(r.entry);
+    r.color = color;
+    // An Abschnittsgrenzen (Sprungstellen) getrennt rechnen – sonst verschmiert die Simpsonregel den Sprung
+    const cuts = rows.flatMap(x => x.iv ? [x.iv.lo, x.iv.hi] : []).filter(v => Number.isFinite(v) && v > Math.min(lo, hi) && v < Math.max(lo, hi));
+    const value = integrateSplit(g, lo, hi, cuts, 400);
+    const area = integrateSplit((x) => Math.abs(g(x)), lo, hi, cuts, 800);
+    areas.push({ row: r, lo, hi, top, bottom, color, outline, value, area, hidden: !!r.entry.hidden });
+  }
+  return { list: rows, curves, areas, funcs, params, env, defs };
+}
+
+const hasX = (n) => JSON.stringify(n || {}).includes('"t":"var"');
+
+// Integral in Teilstücken; die Ränder jedes Stücks minimal nach innen, damit
+// an einer Sprungstelle der Wert des richtigen Abschnitts zählt
+function integrateSplit(g, lo, hi, cuts, n) {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return NaN;
+  const sign = hi < lo ? -1 : 1;
+  const pts = [...new Set([Math.min(lo, hi), ...cuts, Math.max(lo, hi)])].sort((a, b) => a - b);
+  if (pts.length === 2) {
+    const plain = integrate(g, pts[0], pts[1], n);
+    if (Number.isFinite(plain)) return sign * plain;
+  }
+  let sum = 0;
+  for (let k = 0; k < pts.length - 1; k++) {
+    const a = pts[k], b = pts[k + 1], eps = (b - a) * 1e-9;
+    sum += integrate(g, a + eps, b - eps, Math.max(40, Math.round(n / (pts.length - 1) / 2) * 2));
+  }
+  return sign * sum;
 }
 
 function niceStep(range, pixels, target = 45) {
@@ -76,10 +281,11 @@ function niceStep(range, pixels, target = 45) {
   return step * mag;
 }
 
-function autoYRange(list, xmin, xmax) {
+function autoYRange(P, xmin, xmax) {
   const vals = [];
+  const list = [...P.curves, ...P.areas.filter(a => a.outline).map(a => ({ fn: a.top }))];
   for (const f of list) {
-    if (!f.fn || f.vertical || f.entry.hidden) continue;
+    if (!f.fn || f.vertical || f.hidden) continue;
     for (let k = 0; k <= 200; k++) {
       const x = xmin + (xmax - xmin) * k / 200;
       const y = f.fn(x);
@@ -127,7 +333,7 @@ export function drawPlot(config, width, prepared, height) {
   const xmax = Number.isFinite(+config.xmax) && +config.xmax > xmin ? +config.xmax : xmin + 10;
   let ymin = config.ymin, ymax = config.ymax;
   if (!(Number.isFinite(+ymin) && Number.isFinite(+ymax) && +ymax > +ymin && ymin !== '' && ymax !== '' && ymin !== null && ymax !== null)) {
-    [ymin, ymax] = autoYRange(P.list, xmin, xmax);
+    [ymin, ymax] = autoYRange(P, xmin, xmax);
   } else { ymin = +ymin; ymax = +ymax; }
 
   const margin = { l: 10, r: 18, t: 16, b: 14 };
@@ -217,24 +423,49 @@ export function drawPlot(config, width, prepared, height) {
   if (xmin < 0 && xmax > 0 && ymin < 0 && ymax > 0) axes.append(s('text', { class: 'tick-label', x: sx(0) - 5, y: sy(0) + 14, 'text-anchor': 'end' }, '0'));
   svg.append(axes);
 
+  // Flächen (Integrale) unter den Graphen
+  const shades = s('g', { 'clip-path': `url(#${clipId})` });
+  for (const a of P.areas) {
+    if (a.hidden || !Number.isFinite(a.lo) || !Number.isFinite(a.hi)) continue;
+    const x0a = Math.max(Math.min(a.lo, a.hi), xmin), x1a = Math.min(Math.max(a.lo, a.hi), xmax);
+    if (x1a <= x0a) continue;
+    const n = Math.max(60, Math.round((x1a - x0a) * ux));
+    const clampY = (y) => Math.max(-plotH * 2, Math.min(plotH * 3, sy(y)));
+    let up = '', down = '';
+    // Ränder minimal nach innen: am offenen Rand (x < 2) hat der Graph selbst keinen Wert
+    const eps = (x1a - x0a) * 1e-9;
+    for (let k = 0; k <= n; k++) {
+      const x = Math.min(x1a - eps, Math.max(x0a + eps, x0a + (x1a - x0a) * k / n));
+      const yt = a.top(x), yb = a.bottom(x);
+      if (!Number.isFinite(yt) || !Number.isFinite(yb)) continue;
+      up += `${up ? 'L' : 'M'}${sx(x).toFixed(2)} ${clampY(yt).toFixed(2)}`;
+      down = `L${sx(x).toFixed(2)} ${clampY(yb).toFixed(2)}` + down;
+    }
+    if (!up) continue;
+    shades.append(s('path', { class: 'area', d: up + down + 'Z', fill: a.color }));
+    if (a.outline) shades.append(s('path', { class: 'curve', d: up, stroke: a.color }));
+    // Grenzen als dünne senkrechte Linien
+    for (const xb of [a.lo, a.hi]) {
+      if (xb < xmin || xb > xmax) continue;
+      const xi = Math.min(x1a - eps, Math.max(x0a + eps, xb));
+      const yt = a.top(xi), yb = a.bottom(xi);
+      if (Number.isFinite(yt) && Number.isFinite(yb)) shades.append(s('line', { class: 'area-edge', x1: sx(xb), x2: sx(xb), y1: clampY(yb), y2: clampY(yt), stroke: a.color }));
+    }
+  }
+  svg.append(shades);
+
   // Graphen
   const curves = s('g', { 'clip-path': `url(#${clipId})` });
   const labels = s('g');
-  const visible = P.list.filter(f => f.fn && !f.entry.hidden && !f.param);
-  for (const f of visible) {
-    if (f.vertical) {
-      let xv;
-      try { xv = f.fn(0); } catch { continue; }
-      if (!Number.isFinite(xv)) continue;
-      curves.append(s('line', { class: 'curve dashed', x1: sx(xv), x2: sx(xv), y1: margin.t, y2: margin.t + plotH, stroke: f.color }));
-      continue;
-    }
+  const dots = [];
+  const visible = P.curves.filter(c => c.fn && !c.hidden);
+  const trace = (fn, from, to) => {
     let d = '';
     let pen = false, lastY = null;
-    const N = Math.max(200, Math.round(plotW * 1.5));
+    const N = Math.max(200, Math.round(plotW * 1.5 * (to - from) / (xmax - xmin)));
     for (let k = 0; k <= N; k++) {
-      const x = xmin + (xmax - xmin) * k / N;
-      const y = f.fn(x);
+      const x = from + (to - from) * k / N;
+      const y = fn(x);
       if (!Number.isFinite(y)) { pen = false; lastY = null; continue; }
       let py = sy(y);
       const jump = lastY !== null && Math.abs(py - lastY) > plotH * 1.5;
@@ -243,33 +474,73 @@ export function drawPlot(config, width, prepared, height) {
       else d += `L${sx(x).toFixed(2)} ${py.toFixed(2)}`;
       lastY = py;
     }
-    curves.append(s('path', { class: 'curve' + (f.entry.dashed ? ' dashed' : ''), d, stroke: f.color }));
+    return d;
+  };
+  for (const c of visible) {
+    if (c.vertical) {
+      let xv;
+      try { xv = c.fn(0); } catch { continue; }
+      if (!Number.isFinite(xv)) continue;
+      curves.append(s('line', { class: 'curve dashed', x1: sx(xv), x2: sx(xv), y1: margin.t, y2: margin.t + plotH, stroke: c.color }));
+      continue;
+    }
+    for (const r of c.rows) {
+      if (!r.fn || r.entry.hidden) continue;
+      const iv = r.iv;
+      // Nur im erlaubten Bereich zeichnen (etwas hinein, damit die Randpunkte sauber sitzen)
+      const from = iv ? Math.max(xmin, iv.lo) : xmin, to = iv ? Math.min(xmax, iv.hi) : xmax;
+      if (to <= from) continue;
+      curves.append(s('path', { class: 'curve' + (r.entry.dashed ? ' dashed' : ''), d: trace(r.raw || r.fn, from, to), stroke: c.color }));
+      // Randpunkte: ausgefüllt, wenn der Rand dazugehört, sonst offen – wie im Heft
+      if (iv) {
+        for (const [xb, incl] of [[iv.lo, iv.loIncl], [iv.hi, iv.hiIncl]]) {
+          if (!Number.isFinite(xb) || xb < xmin || xb > xmax) continue;
+          let y = r.raw(xb);
+          if (!Number.isFinite(y)) y = r.raw(xb + (xb === iv.lo ? 1 : -1) * 1e-9 * Math.max(1, Math.abs(xb)));
+          if (Number.isFinite(y)) dots.push({ x: xb, y, incl, color: c.color });
+        }
+      }
+    }
+    // Berührpunkt der Tangente
+    if (c.touch) dots.push({ x: c.touch.x0, y: c.touch.y0, incl: true, color: c.color, small: true });
     // Name an den rechten sichtbaren Rand des Graphen
-    if (f.name && config.names !== false) {
+    if (c.label && config.names !== false) {
       for (let k = 0; k <= 60; k++) {
         const x = xmax - (xmax - xmin) * (0.04 + k * 0.012);
-        const y = f.fn(x);
+        const y = c.fn(x);
         if (Number.isFinite(y) && y > ymin + (ymax - ymin) * 0.06 && y < ymax - (ymax - ymin) * 0.04) {
-          const slope = (f.fn(x + 0.01) - y) / 0.01;
-          const above = slope * (uy / ux) < 0.8;
-          labels.append(s('text', { class: 'curve-label', x: sx(x) - 4, y: sy(y) + (above ? -9 : 17), fill: f.color, 'text-anchor': 'end' }, f.name));
+          const slope = (c.fn(x + 0.01) - y) / 0.01;
+          const above = !Number.isFinite(slope) || slope * (uy / ux) < 0.8;
+          labels.append(s('text', { class: 'curve-label', x: sx(x) - 4, y: sy(y) + (above ? -9 : 17), fill: c.color, 'text-anchor': 'end' }, c.label));
           break;
         }
       }
     }
   }
   svg.append(curves);
+  // Offene Punkte zuerst, damit ein ausgefüllter an derselben Stelle darüber liegt.
+  // Zwei offene Punkte an derselben Stelle derselben Kurve: dort geht sie glatt weiter
+  const same = (a, b) => a !== b && a.color === b.color && Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-6 * Math.max(1, Math.abs(a.y));
+  const shown = dots.filter(d => d.incl || !dots.some(e => !e.incl && same(d, e)));
+  const dotsG = s('g');
+  for (const d of shown.sort((a, b) => a.incl - b.incl)) {
+    if (d.y < ymin || d.y > ymax) continue;
+    dotsG.append(s('circle', { class: 'end-dot' + (d.incl ? '' : ' open'), cx: sx(d.x), cy: sy(d.y), r: d.small ? 3.2 : 3.6, stroke: d.color, fill: d.incl ? d.color : 'var(--bg, #fff)' }));
+  }
+  svg.append(dotsG);
 
   // Besondere Punkte
   const pts = [];
   if (config.special) {
     let nN = 0;
-    for (const f of visible.filter(f => !f.vertical)) {
-      for (const x of findRoots(f.fn, xmin, xmax)) pts.push({ x, y: 0, name: 'N', color: f.color, fname: f.name });
-      for (const e of findExtrema(f.fn, xmin, xmax)) pts.push({ x: e.x, y: e.y, name: e.kind === 'max' ? 'H' : 'T', color: f.color, fname: f.name });
-      if (config.inflection) for (const w of findInflections(f.fn, xmin, xmax)) pts.push({ x: w.x, y: w.y, name: 'W', color: f.color, fname: f.name });
+    // Tangenten haben keine eigenen besonderen Punkte – nur ihren Berührpunkt B
+    for (const f of visible.filter(f => f.kind === 'tangent' && f.touch)) pts.push({ x: f.touch.x0, y: f.touch.y0, name: 'B', color: f.color, fname: f.label });
+    for (const f of visible.filter(f => !f.vertical && f.kind !== 'tangent')) {
+      for (const x of findRoots(f.fn, xmin, xmax)) pts.push({ x, y: 0, name: 'N', color: f.color, fname: f.label });
+      for (const e of findExtrema(f.fn, xmin, xmax)) pts.push({ x: e.x, y: e.y, name: e.kind === 'max' ? 'H' : 'T', color: f.color, fname: f.label });
+      if (config.inflection) for (const w of findInflections(f.fn, xmin, xmax)) pts.push({ x: w.x, y: w.y, name: 'W', color: f.color, fname: f.label });
     }
-    const fl = visible.filter(f => !f.vertical);
+    const fl = visible.filter(f => !f.vertical && f.kind !== 'tangent');
     for (let i = 0; i < fl.length; i++) for (let j = i + 1; j < fl.length; j++) {
       const a = fl[i].fn, b = fl[j].fn;
       for (const x of findRoots((x) => a(x) - b(x), xmin, xmax)) pts.push({ x, y: a(x), name: 'S', color: 'var(--fg)' });
@@ -303,6 +574,74 @@ export function drawPlot(config, width, prepared, height) {
   }
   svg.append(ptsG, labels);
   return { svg, view: { xmin, xmax, ymin, ymax, sx, sy, margin, plotW, plotH, W, H }, prepared: P };
+}
+
+// ---------------------------------------------------------------------------
+// Legende: Funktionsterme als Formel – abschnittsweise mit Fallunterscheidung,
+// Ableitungen ausgerechnet, Tangenten als Geradengleichung, Integrale mit Wert
+// ---------------------------------------------------------------------------
+
+const texNum = (v, digits = 2) => formatNumber(v, digits).replace('−', '-').replace(',', '{,}');
+
+function derivativeTex(P, name, d, prefix) {
+  const pcs = P.defs && P.defs[name];
+  const head = prefix || `${name}${"'".repeat(d)}(x) = `;
+  if (!pcs) return null;
+  const parts = pcs.map(pc => ({ t: derive(pc.tree, d), iv: pc }));
+  if (parts.some(x => !x.t)) return null;
+  const conds = P.list.filter(r => r.name === name && r.tree && r.kind === 'fn');
+  if (parts.length > 1) {
+    return `${head}\\begin{cases} ${parts.map((x, i) => `${toTex(x.t)}, & ${conditionTex(conds[i] && conds[i].cond)}`).join(' \\\\ ')} \\end{cases}`;
+  }
+  const cond = conds.length === 1 && conds[0].cond;
+  return head + toTex(parts[0].t) + (cond ? `,\\; ${conditionTex(cond)}` : '');
+}
+
+export function legendItems(P) {
+  const out = [];
+  for (const c of P.curves) {
+    if (c.hidden) continue;
+    const r = c.rows[0];
+    if (!r.tree) continue;
+    let tex;
+    if (c.vertical) tex = 'x = ' + toTex(r.tree);
+    else if (c.pieces) {
+      const rows = c.rows.filter(x => x.tree);
+      tex = `${c.name}(x) = \\begin{cases} ${rows.map(x => `${toTex(x.tree)}, & ${conditionTex(x.cond)}`).join(' \\\\ ')} \\end{cases}`;
+    } else if (r.derivOf) {
+      tex = derivativeTex(P, r.derivOf.f, r.derivOf.d) || `${c.label}(x)`;
+    } else if (c.kind === 'tangent') {
+      const t = c.touch;
+      if (t) {
+        const m = Math.abs(t.m) < 1e-10 ? 0 : t.m, b = Math.abs(t.b) < 1e-10 ? 0 : t.b;
+        const mx = m === 0 ? '' : (Math.abs(m - 1) < 1e-10 ? '' : Math.abs(m + 1) < 1e-10 ? '-' : texNum(m) + ' ') + 'x';
+        const bs = m === 0 ? texNum(b) : b === 0 ? '' : (b > 0 ? ' + ' : ' - ') + texNum(Math.abs(b));
+        tex = `${c.name}(x) = ${mx}${bs}`;
+      } else tex = `${c.name}(x) = ${toTex(r.tree)}`;
+    } else {
+      tex = (c.name ? `${c.name}(x) = ` : 'y = ') + toTex(r.tree);
+      // g(x) = f'(x) → gleich ausgerechnet dazuschreiben
+      const t = r.tree;
+      if (t.t === 'call' && t.user && t.d && t.args[0].t === 'var' && !r.cond) {
+        const dt = derivativeTex(P, t.f, t.d, ' = ');
+        if (dt) tex += dt;
+      }
+      if (r.cond) tex += `,\\; ${conditionTex(r.cond)}`;
+    }
+    out.push({ color: c.color, tex, fallback: r.entry.expr });
+  }
+  for (const a of P.areas) {
+    if (a.hidden) continue;
+    const r = a.row, t = r.tree;
+    const approx = (v) => (Math.abs(v - Number(v.toFixed(2))) > 1e-7 * Math.max(1, Math.abs(v)) ? ' \\approx ' : ' = ') + texNum(v);
+    let tex = (r.name ? `${r.name} = ` : '') + toTex(t) + (Number.isFinite(a.value) ? approx(a.value) : ' = \\text{–}');
+    // Wechselt der Graph das Vorzeichen, ist die Fläche größer als das Integral
+    if (Number.isFinite(a.area) && Number.isFinite(a.value) && Math.abs(Math.abs(a.value) - a.area) > 1e-3 * Math.max(1, a.area)) {
+      tex += `\\quad\\text{(Fläche${approx(a.area).includes('approx') ? ' ≈ ' : ': '}${texNum(a.area)})}`;
+    }
+    out.push({ color: a.color, tex, area: true, fallback: r.entry.expr });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,12 +698,10 @@ function paintPlot(ed, b, wrap) {
   // Legende mit Funktionstermen als Formel
   if (cfg.legend !== false) {
     const leg = h('div', { class: 'plot-legend' });
-    for (const f of res.prepared.list) {
-      if (!f.tree || f.entry.hidden || f.param) continue;
-      const tex = (f.vertical ? 'x = ' : (f.name ? `${f.name}(x) = ` : 'y = ')) + toTex(f.tree);
-      const r = renderToString(tex, { display: false, mode: 'latex' });
-      const item = h('span', { class: 'item' }, h('span', { class: 'sw', style: { background: f.color } }));
-      item.insertAdjacentHTML('beforeend', r.html || esc(f.entry.expr));
+    for (const it of legendItems(res.prepared)) {
+      const r = renderToString(it.tex, { display: false, mode: 'latex' });
+      const item = h('span', { class: 'item' + (it.area ? ' area' : '') }, h('span', { class: 'sw' + (it.area ? ' area' : ''), style: { background: it.color } }));
+      item.insertAdjacentHTML('beforeend', r.html || esc(it.fallback || ''));
       leg.append(item);
     }
     if (leg.childNodes.length) wrap.append(leg);
@@ -452,8 +789,8 @@ function attachInteraction(ed, b, res) {
     const d = toData(e);
     if (d.px < v.margin.l || d.px > v.margin.l + v.plotW) { coords && coords.remove(); coords = null; return; }
     if (!coords) { coords = h('div', { class: 'plot-coords' }); svg.parentElement.append(coords); }
-    const fs = res.prepared.list.filter(f => f.fn && !f.vertical && !f.param && !f.entry.hidden);
-    const vals = fs.map(f => `${f.name || 'y'}(${formatNumber(d.x)}) = ${formatNumber(f.fn(d.x))}`);
+    const fs = res.prepared.curves.filter(c => c.fn && !c.vertical && !c.hidden);
+    const vals = fs.map(c => `${c.label || 'y'}(${formatNumber(d.x)}) = ${formatNumber(c.fn(d.x))}`);
     coords.textContent = vals.length ? vals.join('   ') : `(${formatNumber(d.x)}|${formatNumber(d.y)})`;
   });
   svg.addEventListener('mouseleave', () => { coords && coords.remove(); coords = null; });
@@ -521,6 +858,8 @@ function buildPanel(ed, b, panel) {
   const list = h('div');
   const err = h('div', { class: 'err' });
   const repaint = () => { b._repaint(); ed.changed({ soft: true }); };
+  // Zuletzt bearbeitete Zeile – dort setzen die Hilfsknöpfe an
+  let focusIdx = 0;
 
   const renderRows = () => {
     list.innerHTML = '';
@@ -538,7 +877,8 @@ function buildPanel(ed, b, panel) {
           grid.append(sw);
         }
       });
-      const input = h('input', { class: 'input' + (info && info.error ? ' bad' : ''), value: f.expr, placeholder: 'f(x) = x^2 - 2   ·   a = 2   ·   x = 3', spellcheck: 'false' });
+      const input = h('input', { class: 'input' + (info && info.error ? ' bad' : ''), value: f.expr, placeholder: 'f(x) = x^2 - 2   ·   f(x) = x^2 für x < 3   ·   a = 2', spellcheck: 'false' });
+      input.addEventListener('focus', () => { focusIdx = i; });
       input.addEventListener('input', () => {
         f.expr = input.value;
         const p = prepare(c).list.find(q => q.entry === f);
@@ -576,6 +916,63 @@ function buildPanel(ed, b, panel) {
 
   const add = h('button', { class: 'btn sm outline' }, icon('plus', 'sm'), 'Funktion');
   add.addEventListener('click', () => { c.functions.push({ expr: '' }); renderRows(); list.querySelectorAll('input')[c.functions.length - 1]?.focus(); });
+
+  // Hilfsknöpfe: Einschränkung, abschnittsweise, Ableitung, Tangente, Fläche
+  const inputs = () => list.querySelectorAll('input');
+  const nameAt = (i) => {
+    const prep = prepare(c);
+    const r = prep.list.find(x => x.entry === c.functions[i]);
+    if (r && r.name && !r.param && r.kind === 'fn') return r.name;
+    const first = prep.list.find(x => x.name && x.kind === 'fn');
+    return first ? first.name : 'f';
+  };
+  const addRow = (expr, from = expr.length, to = from) => {
+    const at = Math.min(focusIdx + 1, c.functions.length);
+    c.functions.splice(at, 0, { expr });
+    renderRows();
+    repaint();
+    const inp = inputs()[at];
+    focusIdx = at;
+    if (inp) { inp.focus(); inp.setSelectionRange(from, to); }
+  };
+  const setRow = (i, expr, caret = expr.length) => {
+    const inp = inputs()[i];
+    if (!inp) return;
+    inp.value = expr;
+    inp.dispatchEvent(new Event('input'));
+    inp.focus();
+    inp.setSelectionRange(caret, caret);
+  };
+  const insertInRow = (text) => {
+    const inp = inputs()[focusIdx];
+    if (!inp) return;
+    inp.focus();
+    inp.setRangeText(text, inp.selectionStart ?? inp.value.length, inp.selectionEnd ?? inp.value.length, 'end');
+    inp.dispatchEvent(new Event('input'));
+  };
+  const helpers = h('div', { class: 'chem-helpers plot-helpers' });
+  const helper = (label, tip, fn) => {
+    const bt = h('button', { 'data-tip': tip }, label);
+    bt.addEventListener('mousedown', (e) => { e.preventDefault(); fn(); });
+    helpers.append(bt);
+  };
+  helper('Einschränken', 'Nur ein Teil des Graphen: „für x < 3“, „für 0 ≤ x ≤ 2“ oder „für x ∈ [0; 3[“', () => {
+    const f = c.functions[focusIdx];
+    if (!f) return;
+    if (splitCondition(splitDefinition(f.expr).body).cond) { inputs()[focusIdx]?.focus(); return; }
+    setRow(focusIdx, f.expr.trimEnd() + ' für x < ');
+  });
+  helper('Abschnittsweise', 'Weiterer Abschnitt derselben Funktion (gleicher Name, andere Einschränkung)', () => {
+    const n = nameAt(focusIdx);
+    const f = c.functions[focusIdx];
+    if (f && !splitCondition(splitDefinition(f.expr).body).cond) setRow(focusIdx, f.expr.trimEnd() + ' für x < 0');
+    const expr = `${n}(x) =  für x ≥ 0`;
+    addRow(expr, n.length + 7);
+  });
+  helper("f′ Ableitung", 'Graph der Ableitung – der abgeleitete Term steht in der Legende', () => addRow(`${nameAt(focusIdx)}'(x)`));
+  helper('Tangente', 'Tangente an der Stelle x = 1 (Normale: normale(f, 1))', () => { const e = `tangente(${nameAt(focusIdx)}, 1)`; addRow(e, e.length - 2, e.length - 1); });
+  helper('∫ Fläche', 'Fläche zwischen Graph und x-Achse von 0 bis 2 – mit Wert des Integrals. Zwischen zwei Graphen: ∫_0^2 (f(x) - g(x)) dx', () => { const e = `∫_0^2 ${nameAt(focusIdx)}(x) dx`; addRow(e, 2, 3); });
+  for (const sym of ['≤', '≥', '∈', '∞', 'π']) helper(sym, `„${sym}“ einfügen`, () => insertInRow(sym));
 
   const num = (key, label) => {
     const inp = h('input', { class: 'input', value: c[key] ?? '', placeholder: key.startsWith('y') ? 'auto' : '' });
@@ -629,7 +1026,8 @@ function buildPanel(ed, b, panel) {
 
   panel.append(
     list,
-    h('div', { class: 'panel-row' }, add, h('span', { class: 'hint grow', text: 'Schreibweise wie im Heft: 0,5x^2 − 3 · sin x · √x · f\'(x) · |x|' })),
+    h('div', { class: 'panel-row' }, add, h('span', { class: 'hint grow', text: 'Schreibweise wie im Heft: 0,5x^2 − 3 · sin x · √x · |x| · x^2 für x < 3 · f\'(x) · ∫_0^2 f(x) dx' })),
+    helpers,
     err,
     h('div', { class: 'panel-row' }, points),
     h('div', { class: 'panel-row' }, ranges),
