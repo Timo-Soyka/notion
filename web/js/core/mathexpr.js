@@ -499,15 +499,18 @@ export function toTex(node) {
       case 'integral': return `\\int_{${t(n.lo)}}^{${t(n.hi)}} ${t(n.a)} \\,\\mathrm{d}${n.v}`;
       case 'tangent': return `\\operatorname{${n.normal ? 'Normale' : 'Tangente'}}\\left(${n.f}${"'".repeat(n.d || 0)}, ${t(n.x0)}\\right)`;
       case 'param': return n.n;
-      case 'paren': return `\\left(${t(n.a)}\\right)`;
+      // Brüche brauchen keine Klammer drumherum – sie sind schon eine Einheit
+      case 'paren': return n.a.t === 'bin' && n.a.op === '/' ? t(n.a, parentPrec) : `\\left(${t(n.a)}\\right)`;
       // -2x und -x^2 brauchen keine Klammer, -(x + 1) schon
       case 'neg': return wrap('-' + t(n.a, n.a.t === 'bin' && n.a.op !== '+' && n.a.op !== '-' ? 2 : 3), 3, parentPrec);
       case 'bin': {
         const p = PREC[n.op];
-        if (n.op === '/') return `\\frac{${t(n.a)}}{${t(n.b)}}`;
+        // Zähler, Nenner und Hochzahl stehen schon für sich – Klammern darin weglassen
+        const bare = (m) => (m.t === 'paren' ? m.a : m);
+        if (n.op === '/') return `\\frac{${t(bare(n.a))}}{${t(bare(n.b))}}`;
         if (n.op === '^') {
           const base = n.a.t === 'call' && n.a.f === 'sqrt' || n.a.t === 'bin' || n.a.t === 'neg' ? `\\left(${t(n.a)}\\right)` : t(n.a, 5);
-          return `${base}^{${t(n.b)}}`;
+          return `${base}^{${t(bare(n.b))}}`;
         }
         if (n.op === '*') {
           const left = t(n.a, p), right = t(n.b, p + 0.5);
@@ -535,6 +538,8 @@ export function toTex(node) {
             const known = ['sin', 'cos', 'tan', 'cot', 'sinh', 'cosh', 'tanh', 'ln', 'arcsin', 'arccos', 'arctan', 'min', 'max'];
             const name = n.f === 'asin' ? 'arcsin' : n.f === 'acos' ? 'arccos' : n.f === 'atan' ? 'arctan' : n.f;
             const head = known.includes(name) ? '\\' + name : `\\operatorname{${name}}`;
+            // ln|x| statt ln(|x|)
+            if (n.args.length === 1 && n.args[0].t === 'call' && (n.args[0].f === 'abs' || n.args[0].f === 'betrag')) return `${head}${a[0]}`;
             return `${head}\\left(${a.join(', ')}\\right)`;
           }
         }
@@ -653,7 +658,8 @@ export function simplify(n) {
       const op = n.op;
       if (a.t === 'num' && b.t === 'num') {
         const r = op === '+' ? a.v + b.v : op === '-' ? a.v - b.v : op === '*' ? a.v * b.v : op === '/' ? a.v / b.v : Math.pow(a.v, b.v);
-        if (Number.isFinite(r) && (op !== '/' || Number.isInteger(roundNum(r * 1e6)))) return num(roundNum(r));
+        // Brüche bleiben Brüche (1/3), nur glatt aufgehende werden ausgerechnet
+        if (Number.isFinite(r) && (op !== '/' || Number.isInteger(roundNum(r)))) return num(roundNum(r));
       }
       switch (op) {
         case '+':
@@ -773,11 +779,17 @@ export function derive(tree, order = 1) {
 }
 
 // ---------------------------------------------------------------------------
-// Einschränkungen: "x^2 für x < 3", "x^2, 0 ≤ x ≤ 3", "x^2, x ∈ [0; 3["
+// Einschränkungen: "x^2 für x < 3", "0 < x < 4", "x > 0; x < 4",
+// "x < -1 oder x > 1", "x ∈ [0; 3[ ∪ [5; 6]"
+//
+// Aufbau als kleiner Baum: iv (Grenzen), and (alles gilt), or (eins gilt),
+// semi (Semikolon: einzelne Grenzen ergeben zusammen einen Bereich, ganze
+// Bereiche werden vereinigt). Ausgerechnet wird erst mit den Parametern.
 // ---------------------------------------------------------------------------
 
 const REL = /(<=|>=|=<|=>|≤|≥|⩽|⩾|<|>)/;
 const relInfo = (op) => ({ lt: /^(<|<=|=<|≤|⩽)$/.test(op), incl: /=|≤|≥|⩽|⩾/.test(op) });
+const INTERVAL = /([\[\]\(])\s*([^\[\]()§;|]+?)\s*(?:;|\||,(?!\d))\s*([^\[\]()§;|]+?)\s*([\[\]\)])/g;
 
 // Grenze lesen: Zahl, Term oder ±∞ – als Baum (wird später mit Parametern ausgewertet)
 function boundTree(src) {
@@ -789,43 +801,70 @@ function boundTree(src) {
   return t;
 }
 
-// → { lo, hi, loIncl, hiIncl } (lo/hi als Bäume, null = offen) oder null
+const iv = (lo, hi, loIncl, hiIncl) => ({ t: 'iv', lo, hi, loIncl: !!loIncl, hiIncl: !!hiIncl });
+
+// → Bedingungsbaum oder null
 export function parseCondition(text) {
   let s = String(text || '').trim().replace(/\s+/g, ' ');
   if (!s) return null;
-  // Intervall: x ∈ [0; 3[,  D = ]0; ∞[,  [0, 3]
-  const iv = /^(?:x\s*(?:∈|in|el)\s*|D(?:_?f)?\s*=\s*)?([\[\]\(])\s*(.+?)\s*([\[\]\)])$/i.exec(s);
-  if (iv) {
-    const inner = iv[2];
-    let parts = inner.includes(';') ? inner.split(';') : inner.includes('|') ? inner.split('|') : inner.split(/,(?!\d)|,\s+/);
-    if (parts.length !== 2) return null;
-    try {
-      return { lo: boundTree(parts[0]), hi: boundTree(parts[1]), loIncl: iv[1] === '[', hiIncl: iv[3] === ']' };
-    } catch { return null; }
-  }
-  // Mehrere Bedingungen: "x > 0 und x < 3", "x > 0, x < 3"
-  const conj = s.split(/\s+(?:und|and)\s+|\s*(?:&&|∧)\s*|\s*;\s*|,\s+(?=[^\d])/i);
-  const out = { lo: null, hi: null, loIncl: false, hiIncl: false };
-  const setLo = (t, incl) => { out.lo = t; out.loIncl = incl; };
-  const setHi = (t, incl) => { out.hi = t; out.hiIncl = incl; };
-  for (const part of conj) {
-    const bits = part.split(REL).map(x => x.trim());
-    if (bits.length !== 3 && bits.length !== 5) return null;
-    const xi = bits.findIndex((b, k) => k % 2 === 0 && /^x$/.test(b));
-    if (xi < 0) return null;
-    try {
-      for (let k = 1; k < bits.length; k += 2) {
-        const left = bits[k - 1], right = bits[k + 1], r = relInfo(bits[k]);
-        if (right === 'x' && left !== 'x') {
-          // a < x  → untere Grenze,  a > x → obere
-          if (r.lt) setLo(boundTree(left), r.incl); else setHi(boundTree(left), r.incl);
-        } else if (left === 'x' && right !== 'x') {
-          if (r.lt) setHi(boundTree(right), r.incl); else setLo(boundTree(right), r.incl);
-        } else return null;
-      }
-    } catch { return null; }
-  }
-  return out.lo || out.hi ? out : null;
+  const brackets = [];
+  s = s.replace(INTERVAL, (m, open, a, b, close) => { brackets.push({ open, a, b, close }); return ` §${brackets.length - 1}§ `; }).trim();
+  const atom = (p) => {
+    p = p.trim();
+    const bm = /^(?:x\s*(?:∈|in|el)\s*|D(?:_?f)?\s*=\s*)?§(\d+)§$/i.exec(p);
+    if (bm) {
+      const b = brackets[+bm[1]];
+      return iv(boundTree(b.a), boundTree(b.b), b.open === '[', b.close === ']');
+    }
+    const bits = p.split(REL).map(x => x.trim());
+    if (bits.length < 3 || bits.length % 2 === 0) throw new Error('keine Bedingung');
+    const xi = bits.findIndex((b, k) => k % 2 === 0 && b === 'x');
+    if (xi < 0) throw new Error('keine Bedingung');
+    const parts = [];
+    for (const k of [xi - 1, xi + 1]) {
+      if (k < 1 || k >= bits.length) continue;
+      const r = relInfo(bits[k]);
+      // a < x → untere Grenze; x < b → obere
+      if (k < xi) parts.push(r.lt ? iv(boundTree(bits[k - 1]), null, r.incl, false) : iv(null, boundTree(bits[k - 1]), false, r.incl));
+      else parts.push(r.lt ? iv(null, boundTree(bits[k + 1]), false, r.incl) : iv(boundTree(bits[k + 1]), null, r.incl, false));
+    }
+    if (parts.length === 1) return parts[0];
+    const node = { t: 'and', parts };
+    // "4 < x > 0": zwei untere (oder zwei obere) Grenzen – vermutlich anders gemeint
+    const lows = parts.filter(q => q.lo), highs = parts.filter(q => q.hi);
+    if (lows.length === 2 || highs.length === 2) {
+      const [a, b] = [bits[xi - 2], bits[xi + 2]];
+      const [lo, hi] = [a, b].sort((u, v) => (parseFloat(u.replace(',', '.')) || 0) - (parseFloat(v.replace(',', '.')) || 0));
+      node.hint = lows.length === 2
+        ? `„${p}“ heißt: x > ${a} und x > ${b}. Für x zwischen ${lo} und ${hi}: ${lo} < x < ${hi}`
+        : `„${p}“ heißt: x < ${a} und x < ${b}. Für x zwischen ${lo} und ${hi}: ${lo} < x < ${hi}`;
+    }
+    return node;
+  };
+  const and = (p) => {
+    const parts = p.split(/\s+(?:und|and)\s+|\s*(?:&&|∧)\s*|\s*,(?!\d)\s*/i).filter(x => x.trim());
+    const nodes = parts.map(atom);
+    return nodes.length === 1 ? nodes[0] : { t: 'and', parts: nodes };
+  };
+  const semi = (p) => {
+    const parts = p.split(/\s*;\s*/).filter(x => x.trim());
+    const nodes = parts.map(and);
+    return nodes.length === 1 ? nodes[0] : { t: 'semi', parts: nodes };
+  };
+  try {
+    const parts = s.split(/\s+(?:oder|or)\s+|\s*(?:∨|∪|\|\|)\s*/i).filter(x => x.trim());
+    const nodes = parts.map(semi);
+    const node = nodes.length === 1 ? nodes[0] : { t: 'or', parts: nodes };
+    node.hint = node.hint || findHint(node);
+    return node;
+  } catch { return null; }
+}
+
+function findHint(n) {
+  if (!n || n.t === 'iv') return null;
+  if (n.hint) return n.hint;
+  for (const p of n.parts || []) { const h = findHint(p); if (h) return h; }
+  return null;
 }
 
 // Term und Einschränkung trennen: "x^2 für x < 3" → { body: "x^2", cond }
@@ -835,15 +874,15 @@ export function splitCondition(body) {
   // {x < 3} am Ende (wie bei Desmos)
   const brace = /\{([^{}]*)\}\s*$/.exec(s);
   if (brace) tries.push([brace.index, brace[1]]);
-  const word = /\s+(?:für|fuer|falls|wenn|mit)\s+/gi;
+  const word = /\s*(?:für|fuer|falls|wenn|mit)\s+/gi;
   let m;
-  while ((m = word.exec(s))) tries.push([m.index, s.slice(m.index + m[0].length)]);
+  while ((m = word.exec(s))) if (m.index > 0) tries.push([m.index, s.slice(m.index + m[0].length)]);
   // Komma oder Semikolon außerhalb von Klammern
   let depth = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
-    if ('([{'.includes(c)) depth++;
-    else if (')]}'.includes(c)) depth = Math.max(0, depth - 1);
+    if ('({'.includes(c)) depth++;
+    else if (')}'.includes(c)) depth = Math.max(0, depth - 1);
     else if (depth === 0 && (c === ';' || (c === ',' && !/\d/.test(s[i + 1] || '')))) tries.push([i, s.slice(i + 1)]);
   }
   tries.sort((a, b) => a[0] - b[0]);
@@ -854,33 +893,244 @@ export function splitCondition(body) {
   return { body: s, cond: null };
 }
 
-// Grenzen mit Parametern ausrechnen
+// ---------------------------------------------------------------------------
+// Intervalle ausrechnen: Liste [{ lo, hi, loIncl, hiIncl }], sortiert, ohne Überlappung
+// ---------------------------------------------------------------------------
+
+const EMPTY = [];
+function cut(a, b) {
+  let lo, loIncl, hi, hiIncl;
+  if (a.lo > b.lo) { lo = a.lo; loIncl = a.loIncl; } else if (b.lo > a.lo) { lo = b.lo; loIncl = b.loIncl; } else { lo = a.lo; loIncl = a.loIncl && b.loIncl; }
+  if (a.hi < b.hi) { hi = a.hi; hiIncl = a.hiIncl; } else if (b.hi < a.hi) { hi = b.hi; hiIncl = b.hiIncl; } else { hi = a.hi; hiIncl = a.hiIncl && b.hiIncl; }
+  if (lo > hi || (lo === hi && !(loIncl && hiIncl))) return null;
+  return { lo, hi, loIncl, hiIncl };
+}
+const intersect = (A, B) => A.flatMap(a => B.map(b => cut(a, b)).filter(Boolean));
+function union(lists) {
+  const all = lists.flat().sort((a, b) => a.lo - b.lo || (b.loIncl - a.loIncl));
+  const out = [];
+  for (const x of all) {
+    const last = out[out.length - 1];
+    if (last && (x.lo < last.hi || (x.lo === last.hi && (x.loIncl || last.hiIncl)))) {
+      if (x.hi > last.hi || (x.hi === last.hi && x.hiIncl)) { last.hi = x.hi; last.hiIncl = x.hiIncl; }
+    } else out.push({ ...x });
+  }
+  return out;
+}
+const oneSided = (n) => n.t === 'iv' && (!n.lo || !n.hi);
+
+// Grenzen mit Parametern ausrechnen → Liste von Intervallen (leer: nirgends)
 export function evalCondition(cond, params) {
   if (!cond) return null;
   const val = (t, def) => {
     if (!t) return def;
     try { const v = compile(t, { params })(0); return Number.isNaN(v) ? def : v; } catch { return def; }
   };
-  return { lo: val(cond.lo, -Infinity), hi: val(cond.hi, Infinity), loIncl: cond.loIncl, hiIncl: cond.hiIncl };
+  const ev = (n) => {
+    switch (n.t) {
+      case 'iv': {
+        const c = cut({ lo: val(n.lo, -Infinity), hi: val(n.hi, Infinity), loIncl: n.lo ? n.loIncl : false, hiIncl: n.hi ? n.hiIncl : false },
+          { lo: -Infinity, hi: Infinity, loIncl: false, hiIncl: false });
+        return c ? [c] : EMPTY;
+      }
+      case 'and': return n.parts.map(ev).reduce(intersect);
+      case 'or': return union(n.parts.map(ev));
+      case 'semi': {
+        // x > 0; x < 4 → 0 < x < 4 · x < -1; x > 1 → beides (Vereinigung)
+        const lists = n.parts.map(ev);
+        if (n.parts.every(oneSided)) {
+          const both = lists.reduce(intersect);
+          if (both.length) return both;
+        }
+        return union(lists);
+      }
+    }
+    return EMPTY;
+  };
+  return ev(cond);
 }
 
-export function inInterval(iv, x) {
-  if (!iv) return true;
-  if (x < iv.lo || (x === iv.lo && !iv.loIncl && Number.isFinite(iv.lo))) return false;
-  if (x > iv.hi || (x === iv.hi && !iv.hiIncl && Number.isFinite(iv.hi))) return false;
-  return true;
+// Liegt x im erlaubten Bereich? (null = überall)
+export function inInterval(ivs, x) {
+  if (!ivs) return true;
+  const list = Array.isArray(ivs) ? ivs : [ivs];
+  for (const iv of list) {
+    if (x < iv.lo || (x === iv.lo && !iv.loIncl && Number.isFinite(iv.lo))) continue;
+    if (x > iv.hi || (x === iv.hi && !iv.hiIncl && Number.isFinite(iv.hi))) continue;
+    return true;
+  }
+  return false;
 }
 
-// Für die Legende: "0 ≤ x < 3"
-export function conditionTex(cond) {
+// Für die Legende: "0 ≤ x < 3", "x < -1 oder x > 1"
+export function conditionTex(cond, params = {}) {
   if (!cond) return '';
-  const lo = cond.lo && !(cond.lo.t === 'num' && cond.lo.v === -Infinity) ? toTex(cond.lo) : null;
-  const hi = cond.hi && !(cond.hi.t === 'num' && cond.hi.v === Infinity) ? toTex(cond.hi) : null;
-  const rel = (incl) => (incl ? ' \\le ' : ' < ');
-  if (lo && hi) return `${lo}${rel(cond.loIncl)}x${rel(cond.hiIncl)}${hi}`;
-  if (hi) return `x${rel(cond.hiIncl)}${hi}`;
-  if (lo) return `x${cond.loIncl ? ' \\ge ' : ' > '}${lo}`;
-  return '';
+  const isInf = (t, v) => t && t.t === 'num' && t.v === v;
+  const chain = (lo, loIncl, hi, hiIncl) => {
+    const L = lo && !isInf(lo, -Infinity) ? toTex(lo) : null;
+    const H = hi && !isInf(hi, Infinity) ? toTex(hi) : null;
+    const rel = (incl) => (incl ? ' \\le ' : ' < ');
+    if (L && H) return `${L}${rel(loIncl)}x${rel(hiIncl)}${H}`;
+    if (H) return `x${rel(hiIncl)}${H}`;
+    if (L) return `x${loIncl ? ' \\ge ' : ' > '}${L}`;
+    return 'x \\in \\mathbb{R}';
+  };
+  // Mehrere einzelne Grenzen zu einer Kette zusammenfassen, wenn es genau eine untere und eine obere gibt
+  const merged = (parts) => {
+    if (!parts.every(p => p.t === 'iv')) return null;
+    const los = parts.filter(p => p.lo), his = parts.filter(p => p.hi);
+    if (los.length > 1 || his.length > 1) return null;
+    return chain(los[0] && los[0].lo, los[0] && los[0].loIncl, his[0] && his[0].hi, his[0] && his[0].hiIncl);
+  };
+  const tex = (n) => {
+    switch (n.t) {
+      case 'iv': return chain(n.lo, n.loIncl, n.hi, n.hiIncl);
+      case 'and': return merged(n.parts) || n.parts.map(tex).join(' \\text{ und } ');
+      case 'or': return n.parts.map(tex).join(' \\text{ oder } ');
+      case 'semi': {
+        const res = evalCondition(n, params);
+        const asOne = n.parts.every(oneSided) && res.length === 1 && Number.isFinite(res[0].lo) && Number.isFinite(res[0].hi) && merged(n.parts);
+        return asOne || n.parts.map(tex).join(' \\text{ oder } ');
+      }
+    }
+    return '';
+  };
+  return tex(cond);
+}
+
+// ---------------------------------------------------------------------------
+// Stammfunktionen (für exakte Integralwerte und [F(x)] in der Legende)
+// ---------------------------------------------------------------------------
+
+// Bruch erkennen: 2,6666… → [8, 3]; nichts Passendes → null
+export function toFraction(v, maxDen = 1000) {
+  if (!Number.isFinite(v)) return null;
+  const tol = 1e-9 * Math.max(1, Math.abs(v));
+  let h0 = 1, h1 = 0, k0 = 0, k1 = 1, x = v;
+  for (let i = 0; i < 20; i++) {
+    const a = Math.floor(x);
+    [h0, h1] = [a * h0 + h1, h0];
+    [k0, k1] = [a * k0 + k1, k0];
+    if (k0 > maxDen) return null;
+    if (Math.abs(h0 / k0 - v) < tol) return [h0, k0];
+    const r = x - a;
+    if (r < 1e-12) break;
+    x = 1 / r;
+  }
+  return null;
+}
+
+// Zahl als Baum, Brüche als Bruch (1/3 statt 0,333…)
+export function numTree(v) {
+  const f = toFraction(v);
+  if (!f || f[1] === 1) return f ? num(f[0]) : num(roundNum(v));
+  const t = bin('/', num(Math.abs(f[0])), num(f[1]));
+  return f[0] < 0 ? { t: 'neg', a: t } : t;
+}
+
+// Linearer Term k·x + m? → { k, m } (für die Kettenregel rückwärts)
+function linear(n) {
+  const p = toPoly(n);
+  if (!p || Object.keys(p).some(d => +d > 1)) return null;
+  return { k: p[1] || 0, m: p[0] || 0 };
+}
+
+const isConst = (n) => !hasVar(n, 'x');
+
+// Stammfunktion als Baum oder null (Summen, Faktoren, Potenzen, e, sin, cos, 1/x)
+export function antiderivative(n) {
+  if (!n) return null;
+  const F = antiderivative;
+  const X = { t: 'var', n: 'x' };
+  if (isConst(n)) return mul(n, X);
+  const p = toPoly(n);
+  if (p) {
+    const out = {};
+    for (const d in p) out[+d + 1] = p[d] / (+d + 1);
+    return polyTreeExact(out);
+  }
+  switch (n.t) {
+    case 'paren': return F(n.a);
+    case 'neg': { const a = F(n.a); return a && { t: 'neg', a }; }
+    case 'bin': {
+      if (n.op === '+' || n.op === '-') { const a = F(n.a), b = F(n.b); return a && b && bin(n.op, a, b); }
+      if (n.op === '*') {
+        if (isConst(n.a)) { const b = F(n.b); return b && mul(n.a, b); }
+        if (isConst(n.b)) { const a = F(n.a); return a && mul(n.b, a); }
+        return null;
+      }
+      if (n.op === '/') {
+        if (isConst(n.b)) { const a = F(n.a); return a && bin('/', a, n.b); }
+        // c / (k·x + m) → c/k · ln|k·x + m|
+        const l = linear(n.b);
+        if (isConst(n.a) && l && l.k) return mul(bin('/', n.a, numTree(l.k)), call('ln', call('abs', n.b)));
+        return null;
+      }
+      if (n.op === '^') {
+        const l = linear(n.a);
+        // (k·x + m)^r → (k·x + m)^(r+1) / (k·(r+1)),  r = −1 → ln
+        if (l && l.k && isConst(n.b)) {
+          const r = compile(n.b)(0);
+          if (!Number.isFinite(r)) return null;
+          if (Math.abs(r + 1) < 1e-12) return bin('/', call('ln', call('abs', n.a)), numTree(l.k));
+          return mul(numTree(1 / (l.k * (r + 1))), bin('^', n.a, numTree(r + 1)));
+        }
+        // e^(k·x + m) → e^(k·x + m) / k
+        if (n.a.t === 'const' && n.a.n === 'e') { const e = linear(n.b); if (e && e.k) return mul(numTree(1 / e.k), n); }
+        return null;
+      }
+      return null;
+    }
+    case 'call': {
+      const u = n.args[0], l = linear(u);
+      if (!l || !l.k) return null;
+      const k = numTree(1 / l.k);
+      switch (n.f) {
+        case 'sin': return mul(k, { t: 'neg', a: call('cos', u) });
+        case 'cos': return mul(k, call('sin', u));
+        case 'exp': return mul(k, n);
+        case 'sqrt': case 'wurzel': return mul(numTree(2 / (3 * l.k)), bin('^', u, bin('/', num(3), num(2))));
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+// Polynom mit Brüchen als Koeffizienten: 1/3 x^3 statt 0,333 x^3
+function polyTreeExact(p) {
+  const degs = Object.keys(p).map(Number).filter(d => Math.abs(p[d]) > 1e-12).sort((a, b) => b - a);
+  if (!degs.length) return num(0);
+  let out = null;
+  for (const d of degs) {
+    const c = p[d];
+    const pow = d === 0 ? null : d === 1 ? { t: 'var', n: 'x' } : bin('^', { t: 'var', n: 'x' }, num(d));
+    const mag = Math.abs(c);
+    const coef = numTree(mag);
+    const term = !pow ? coef : isNum(coef, 1) ? pow : { t: 'bin', op: '*', a: coef, b: pow, implicit: true };
+    if (!out) out = c < 0 ? { t: 'neg', a: term } : term;
+    else out = bin(c < 0 ? '-' : '+', out, term);
+  }
+  return out;
+}
+
+// Aufrufe selbst definierter Funktionen durch ihren Term ersetzen: f(x) → x^2
+export function inlineCalls(n, trees) {
+  if (!n || typeof n !== 'object') return n;
+  if (n.t === 'call' && n.user && !n.d && trees[n.f]) return { t: 'paren', a: substitute(trees[n.f], 'x', inlineCalls(n.args[0], trees)) };
+  if (n.t === 'call' && n.user) return n;
+  const out = { ...n };
+  for (const k of ['a', 'b', 'lo', 'hi', 'x0']) if (n[k]) out[k] = inlineCalls(n[k], trees);
+  if (n.args) out.args = n.args.map(a => inlineCalls(a, trees));
+  return out;
+}
+
+// Stammfunktion lesbar (vereinfacht) – oder null
+export function primitive(tree) {
+  const F = antiderivative(tree);
+  if (!F) return null;
+  const p = toPoly(F);
+  return p ? polyTreeExact(p) : simplify(F);
 }
 
 function formatNumberTex(v, raw) {

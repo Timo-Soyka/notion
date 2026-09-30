@@ -60,11 +60,12 @@ eq('abschnittsweise werte', [pw.funcs.f(-2), pw.funcs.f(0), pw.funcs.f(2)], [4, 
 eq('legende ableitung', tex('f(x) = 0,5x^3 - 2x', "f'(x)")[1], "f'(x) = 1{,}5 x^{2} - 2");
 eq('legende eingeschränkt', tex('f(x) = x^2 für x < 3'), ['f(x) = x^{2},\\; x < 3']);
 eq('legende tangente', tex('f(x) = x^2', 'tangente(f, 1)')[1], 't(x) = 2 x - 1');
-eq('legende fläche', tex('f(x) = x^2', 'A = ∫_0^3 f(x) dx')[1], 'A = \\int_{0}^{3} f\\left(x\\right) \\,\\mathrm{d}x = 9');
-eq('fläche mit vorzeichenwechsel', tex('∫_-1^1 x^3 dx')[0], '\\int_{-1}^{1} x^{3} \\,\\mathrm{d}x = 0\\quad\\text{(Fläche: 0{,}5)}');
+eq('legende fläche', tex('f(x) = x^2', 'A = ∫_0^3 f(x) dx')[1], 'A = \\int_{0}^{3} f\\left(x\\right) \\,\\mathrm{d}x = \\left[\\frac{1}{3} x^{3}\\right]_{0}^{3} = 9');
+eq('fläche mit vorzeichenwechsel', tex('∫_-1^1 x^3 dx')[0], '\\int_{-1}^{1} x^{3} \\,\\mathrm{d}x = \\left[\\frac{1}{4} x^{4}\\right]_{-1}^{1} = 0\\qquad\\text{Fläche: }\\frac{1}{2} \\approx 0{,}5');
 const jump = P('f(x) = x^2 für x < 1', 'f(x) = -x + 3 für x ≥ 1', '∫_0^2 f(x) dx');
 near('integral über sprungstelle', jump.areas[0].value, 1 / 3 + 1.5, 1e-6);
 near('integral bis zum offenen rand', P('f(x) = x^2 für x < 2', '∫_0^2 f(x) dx').areas[0].value, 8 / 3, 1e-6);
+eq('tangente heißt t, auch neben sqrt', P('f(x) = x^2', 'g(x) = sqrt(x)', 'tangente(f, 1)').list[2].name, 't');
 eq('unbekannter name', P('f(x) = x^2', 'g(x) = k(x)').list[1].error.startsWith('„k“ ist noch nicht festgelegt'), true);
 
 console.log(`${ok} ok, ${fail} fehlgeschlagen`);

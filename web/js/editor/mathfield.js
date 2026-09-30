@@ -40,13 +40,13 @@ export const GERMAN_SHORTCUTS = [
   [['betrag'], '\\left|#?\\right|', 'Betrag'],
   [['intervall'], '\\left[#?;#?\\right]', 'Geschlossenes Intervall [a; b]'],
   [['offen'], '\\left]#?;#?\\right[', 'Offenes Intervall ]a; b[ – halboffen einfach tippen: [0; 3['],
-  [['integral'], '\\int_{#?}^{#?}#?\\,\\mathrm{d}#?', 'Integral mit Grenzen: unten, Tab, oben, Tab, Term, Tab, Variable'],
+  [['int', 'integral'], '\\int_{#?}^{#?}#?\\,\\mathrm{d}x', 'Integral mit Grenzen: unten, Tab, oben, Tab, Term'],
   [['unbestimmt'], '\\int #?\\,\\mathrm{d}x', 'Unbestimmtes Integral (ohne Grenzen)'],
   [['stammfunktion', 'auswerten'], '\\left[#?\\right]_{#?}^{#?}', 'Stammfunktion in Grenzen einsetzen: Term, Tab, unten, Tab, oben', '\\left[F(x)\\right]_{a}^{b}'],
   [['ableitung'], '\\frac{\\mathrm{d}}{\\mathrm{d}x}\\left(#?\\right)', "Ableitung nach x (sonst einfach f'(x) tippen)"],
-  [['summe'], '\\sum_{#?}^{#?}', 'Summe'],
-  [['produkt'], '\\prod_{#?}^{#?}', 'Produkt'],
-  [['grenzwert', 'limes'], '\\lim_{#?\\to#?}', 'Grenzwert'],
+  [['sum', 'summe'], '\\sum_{#?}^{#?}', 'Summe'],
+  [['prod', 'produkt'], '\\prod_{#?}^{#?}', 'Produkt'],
+  [['lim', 'limes', 'grenzwert'], '\\lim_{#?\\to#?}', 'Grenzwert'],
   [['vektor'], '\\vec{#?}', 'Vektorpfeil'],
   [['spaltenvektor'], '\\begin{pmatrix}#?\\\\#?\\\\#?\\end{pmatrix}', 'Spaltenvektor (3 Einträge)'],
   [['zweiervektor'], '\\begin{pmatrix}#?\\\\#?\\end{pmatrix}', 'Spaltenvektor (2 Einträge)'],
@@ -117,11 +117,65 @@ function shortcuts(defaults) {
   return out;
 }
 
+// "integral" tippen: Schon nach "int" steht die Vorlage da, der Rest ("egral")
+// landet im ersten Kästchen. Dann Rest entfernen bzw. die gemeinte Vorlage setzen.
+const PH = '\\\\placeholder\\{\\}';
+const either = (cmd, rest) => new RegExp(`\\\\${cmd}_\\{(?:${rest}|${PH})\\}\\^\\{(?:${rest}|${PH})\\}`);
+const LEFTOVERS = [
+  [either('int', 'egral'), '\\int_{\\placeholder{}}^{\\placeholder{}}', '\\int_{'],
+  [new RegExp(`\\\\int_\\{(?:ervall|${PH})\\}\\^\\{(?:ervall|${PH})\\}${PH}\\\\,\\\\mathrm\\{d\\}x`), '\\left[\\placeholder{};\\placeholder{}\\right]', '\\left['],
+  [/\\lim_\{(?:es|\\placeholder\{\})\\to(?:es|\\placeholder\{\})\}/, '\\lim_{\\placeholder{}\\to\\placeholder{}}', '\\lim_{'],
+  [either('sum', 'me'), '\\sum_{\\placeholder{}}^{\\placeholder{}}', '\\sum_{'],
+  [either('prod', 'ukt'), '\\prod_{\\placeholder{}}^{\\placeholder{}}', '\\prod_{'],
+  [/\\sqrt\{zeichen\}/, '\\surd', null]
+];
+
+// Offsets aller Kästchen in Dokumentreihenfolge
+function placeholders(mf) {
+  const out = [];
+  for (let p = 1; p <= mf.lastOffset; p++) if (mf.getValue(p - 1, p) === '\\placeholder{}') out.push(p);
+  return out;
+}
+const selectPlaceholder = (mf, p) => { mf.selection = { ranges: [[p - 1, p]] }; };
+
+function fixLeftovers(mf) {
+  const v = mf.getValue('latex');
+  for (const [re, by, head] of LEFTOVERS) {
+    const m = re.exec(v);
+    if (!m || !/egral|ervall|es|me|ukt|zeichen/.test(m[0])) continue;
+    const next = v.slice(0, m.index) + by + v.slice(m.index + m[0].length);
+    mf.value = next;
+    if (!head) { mf.position = mf.lastOffset; return true; }
+    // In das erste Kästchen der Vorlage (Kästchen davor mitzählen)
+    const before = (next.slice(0, m.index).match(/\\placeholder/g) || []).length;
+    const ph = placeholders(mf);
+    if (ph[before]) selectPlaceholder(mf, ph[before]);
+    return true;
+  }
+  return false;
+}
+
+// Bei ∫, Σ, Π führt MathLive die obere Grenze vor der unteren und wählt sie
+// nach dem Einfügen zuerst aus. Wir beginnen unten; zurückgegeben wird die
+// Stelle der oberen Grenze, zu der Tab danach springt.
+function preferLowerBound(mf) {
+  const v = mf.getValue('latex');
+  const re = /\\(int|sum|prod)_\{\\placeholder\{\}\}\^\{\\placeholder\{\}\}/g;
+  let m;
+  while ((m = re.exec(v))) {
+    const k = (v.slice(0, m.index).match(/\\placeholder/g) || []).length;
+    const ph = placeholders(mf);
+    const [a, b] = mf.selection.ranges[0];
+    if (ph[k + 1] && a === ph[k] - 1 && b === ph[k]) { selectPlaceholder(mf, ph[k + 1]); return ph[k]; }
+  }
+  return null;
+}
+
 const MARK_DEF = '\\mathord{\\mkern1mu\\textcolor{hm#1}{\\rule[-0.3em]{0.14em}{1.2em}}\\mkern1mu}';
 // Kommandostrich: Abstand, senkrechter Strich, kleiner Abstand
 const BAR_DEF = '\\mathord{\\qquad\\textcolor{hmbar}{\\vert}\\;}';
 
-// Ein Formelfeld anlegen. opts: value, inline, onInput(latex), onKey(e) → true wenn erledigt,
+// Ein Formelfeld anlegen. opts: value, inline, shortcuts (zusätzliche Kürzel), onInput(latex), onKey(e) → true wenn erledigt,
 // onMoveOut(direction), extraMenu() → zusätzliche Kontextmenü-Einträge
 export async function createField(opts = {}) {
   const ML = await loadMathLive();
@@ -144,7 +198,7 @@ export async function createField(opts = {}) {
       const m = /^hm(\d+)$/.exec(name);
       return m ? markColor(parseInt(m[1], 10)) : undefined;
     };
-    mf.inlineShortcuts = shortcuts(mf.inlineShortcuts);
+    mf.inlineShortcuts = { ...shortcuts(mf.inlineShortcuts), ...(opts.shortcuts || {}) };
     mf.value = opts.value || '';
     opts.onMount && opts.onMount(mf);
   }, { once: true });
@@ -155,11 +209,22 @@ export async function createField(opts = {}) {
   let quoteMode = false;
   // Gerade eingefügtes Isotop: Tab springt Massenzahl → Ordnungszahl → Element
   let iso = null;
+  // Gerade eingefügtes Integral (Summe, Produkt): Tab springt von unten nach oben
+  let upper = null;
+  let leftoverTimer = null;
+  // Stand beim letzten Tastendruck – daran sieht man, ob gerade eine ∫-Vorlage dazukam
+  let lastLatex = '';
+  const BOUNDS = /\\(?:int|sum|prod)_\{\\placeholder\{\}\}\^\{\\placeholder\{\}\}/g;
+  const countBounds = (v) => (v.match(BOUNDS) || []).length;
   const emit = () => opts.onInput && opts.onInput(value(mf));
 
   mf.addEventListener('keydown', (e) => {
     if (opts.onKey && opts.onKey(e, mf)) { e.preventDefault(); e.stopImmediatePropagation(); fresh = null; return; }
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    // Neue ∫-Vorlage seit dem letzten Tastendruck: zuerst die untere Grenze
+    const now = mf.getValue('latex');
+    if (countBounds(now) > countBounds(lastLatex)) { const up = preferLowerBound(mf); if (up) upper = up; }
+    lastLatex = now;
     if (e.key === 'Tab' && iso && plain && !e.shiftKey) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -168,6 +233,32 @@ export async function createField(opts = {}) {
       return;
     }
     if (iso && ['Escape', 'Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)) endIsotope();
+    if (e.key === 'Tab' && upper && plain && !e.shiftKey) {
+      const at = upper;
+      upper = null;
+      if (mf.getValue(at - 1, at) === '\\placeholder{}') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        selectPlaceholder(mf, at);
+        return;
+      }
+    }
+    if (['Escape', 'Enter'].includes(e.key)) upper = null;
+    // Tab: ins nächste Kästchen, sonst aus Wurzel, Bruch, Hochzahl … hinaus.
+    // (MathLive markiert sonst manchmal die ganze Struktur, und das nächste
+    // Zeichen ersetzt sie.) Ganz außen darf Tab das Feld verlassen.
+    if (e.key === 'Tab' && plain && !e.shiftKey) {
+      const ahead = mf.getValue(mf.position, mf.lastOffset);
+      const p0 = mf.position;
+      if (/\\placeholder/.test(ahead)) mf.executeCommand('moveToNextPlaceholder');
+      else mf.executeCommand('moveAfterParent');
+      if (mf.position !== p0) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        mf.selection = { ranges: [[mf.position, mf.position]] };
+        return;
+      }
+    }
     // Deutsche Tastatur: "^" ist eine Tottaste (wartet aufs nächste Zeichen) –
     // hier soll sie sofort in die Hochzahl springen.
     if (plain && !e.shiftKey && e.key === 'Dead' && /^(IntlBackslash|Backquote)$/.test(e.code)) {
@@ -231,6 +322,16 @@ export async function createField(opts = {}) {
         pre = mf.getValue(0, pos);
       }
       if (mf.mode !== 'text') quoteMode = false;
+      const up = preferLowerBound(mf);
+      if (up) { upper = up; pos = mf.position; pre = mf.getValue(0, pos); }
+      // Reste langer Kürzel erst aufräumen, wenn MathLive mit der Taste fertig ist
+      clearTimeout(leftoverTimer);
+      leftoverTimer = setTimeout(() => {
+        if (!fixLeftovers(mf)) return;
+        const u = preferLowerBound(mf);
+        if (u) upper = u;
+        emit();
+      }, 0);
       // „isotop“ bzw. „nuklid“ getippt → Nuklid-Vorlage, Einfügemarke in der Massenzahl
       if (mf.mode === 'math' && (m = /(?:^|[^a-zA-Z\\])([iI]sotop|[nN]uklid)$/.exec(pre))) {
         for (let k = 0; k < 6; k++) mf.executeCommand('deleteBackward');
@@ -299,7 +400,7 @@ export async function createField(opts = {}) {
     target.executeCommand('moveAfterParent');
     endIsotope();
   }
-  mf.addEventListener('blur', () => { if (iso) endIsotope(); });
+  mf.addEventListener('blur', () => { if (iso) endIsotope(); upper = null; });
   mf.insertIsotope = () => { insertIsotope(mf); emit(); };
 
   mf.addEventListener('move-out', (e) => {

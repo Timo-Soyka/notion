@@ -34,7 +34,7 @@ t('Extrema', () => {
 t('LaTeX', () => {
   assert.equal(toTex(parseExpr('2x^2 - 3')), '2 x^{2} - 3');
   assert.equal(toTex(parseExpr('0,5x + 1')), '0{,}5 x + 1');
-  assert.equal(toTex(parseExpr('(x+1)/2')), '\\frac{\\left(x + 1\\right)}{2}');
+  assert.equal(toTex(parseExpr('(x+1)/2')), '\\frac{x + 1}{2}');
 });
 t('Definition', () => {
   assert.deepEqual(splitDefinition('f(x) = x^2'), { name: 'f', body: 'x^2' });

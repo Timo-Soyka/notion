@@ -9,11 +9,19 @@ import { h, esc } from '../../ui/ui.js';
 import { icon } from '../../ui/icons.js';
 import {
   parseExpr, compile, toTex, splitDefinition, formatNumber, findRoots, findExtrema, findInflections, usedNames, usedFunctions,
-  splitCondition, evalCondition, inInterval, conditionTex, derive, integrate, tangentLine
+  splitCondition, evalCondition, inInterval, conditionTex, derive, integrate, tangentLine, primitive, inlineCalls, toFraction
 } from '../../core/mathexpr.js';
 import { renderToString } from '../render/katex.js';
 import { captionEl, mediaBar } from './atoms.js';
+import { createField } from '../mathfield.js';
+import { latexToExpr, exprToLatex } from '../../core/plotlatex.js';
 import { toPx, formatWidth, parseWidth, CM_PX } from '../../core/widths.js';
+
+// Zusätzliche Kürzel in den Funktionszeilen
+const PLOT_SHORTCUTS = {
+  tangente: '\\operatorname{tangente}\\left(#?,#?\\right)', normale: '\\operatorname{normale}\\left(#?,#?\\right)',
+  unendlich: '\\infty'
+};
 
 export const PLOT_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0d9488', '#db2777', '#4b5563'];
 const AUTO_NAMES = ['f', 'g', 'h', 'k', 'p', 'q', 'r', 's', 'u', 'v', 'w'];
@@ -47,7 +55,7 @@ function piecewise(pieces) {
 // Funktionsnamen, die in Termen aufgerufen werden (f(…), f'(…), tangente(f, …))
 function calledNames(body) {
   const out = new Set();
-  for (const m of String(body || '').matchAll(/(\p{L})'*\s*\(/gu)) out.add(m[1]);
+  for (const m of String(body || '').matchAll(/(?<!\p{L})(\p{L})'*\s*\(/gu)) out.add(m[1]);
   for (const m of String(body || '').matchAll(/(?:tangente?|normale?)\s*\(\s*(\p{L})/giu)) out.add(m[1]);
   return out;
 }
@@ -171,6 +179,7 @@ export function prepare(config) {
     try {
       r.raw = compile(r.tree, env);
       r.iv = evalCondition(r.cond, params);
+      if (r.iv && !r.iv.length) throw new Error('Die Bedingungen widersprechen sich – der Graph wäre nirgends zu sehen');
       r.fn = r.iv ? piecewise([{ fn: r.raw, iv: r.iv }]) : r.raw;
     } catch (err) { r.error = err.message; r.fn = null; }
   }
@@ -213,7 +222,7 @@ export function prepare(config) {
     if (r0.derivOf && !r0.cond) {
       const comp = derivPieces(r0.derivOf.f, r0.derivOf.d);
       if (comp && comp.some(pc => pc.iv)) {
-        c.rows = comp.map(pc => ({ ...r0, raw: pc.fn, fn: piecewise([pc]), iv: pc.iv && { ...pc.iv, loIncl: false, hiIncl: false }, derived: true }));
+        c.rows = comp.map(pc => ({ ...r0, raw: pc.fn, fn: piecewise([pc]), iv: pc.iv && pc.iv.map(v => ({ ...v, loIncl: false, hiIncl: false })), derived: true }));
       }
     }
     c.fn = c.pieces ? funcs[c.name] : c.rows.length > 1 ? piecewise(c.rows.map(r => ({ fn: r.raw, iv: r.iv }))) : c.rows[0].fn;
@@ -245,15 +254,55 @@ export function prepare(config) {
     color = r.entry.color || color || nextColor(r.entry);
     r.color = color;
     // An Abschnittsgrenzen (Sprungstellen) getrennt rechnen – sonst verschmiert die Simpsonregel den Sprung
-    const cuts = rows.flatMap(x => x.iv ? [x.iv.lo, x.iv.hi] : []).filter(v => Number.isFinite(v) && v > Math.min(lo, hi) && v < Math.max(lo, hi));
-    const value = integrateSplit(g, lo, hi, cuts, 400);
-    const area = integrateSplit((x) => Math.abs(g(x)), lo, hi, cuts, 800);
-    areas.push({ row: r, lo, hi, top, bottom, color, outline, value, area, hidden: !!r.entry.hidden });
+    const cuts = rows.flatMap(x => (x.iv || []).flatMap(v => [v.lo, v.hi])).filter(v => Number.isFinite(v) && v > Math.min(lo, hi) && v < Math.max(lo, hi));
+    let value = integrateSplit(g, lo, hi, cuts, 400);
+    let area = integrateSplit((x) => Math.abs(g(x)), lo, hi, cuts, 800);
+    // Exakt über die Stammfunktion, wenn es eine gibt (dann auch [F(x)] in der Legende)
+    const exact = t.v === 'x' ? exactIntegral(t.a, lo, hi, cuts, defs, g) : null;
+    if (exact) { value = exact.value; area = exact.area; }
+    areas.push({ row: r, lo, hi, top, bottom, color, outline, value, area, exact, hidden: !!r.entry.hidden });
   }
   return { list: rows, curves, areas, funcs, params, env, defs };
 }
 
 const hasX = (n) => JSON.stringify(n || {}).includes('"t":"var"');
+
+// ∫ exakt: Stammfunktion je Abschnitt (bei abschnittsweisen Funktionen der
+// jeweils gültige Term), Fläche mit Aufteilung an den Nullstellen.
+// → { value, area, F (nur bei einem Abschnitt) } oder null
+function exactIntegral(integrand, lo, hi, cuts, defs, g) {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  const a = Math.min(lo, hi), b = Math.max(lo, hi), sign = hi < lo ? -1 : 1;
+  const roots = findRoots(g, a, b, 400).filter(x => x > a && x < b);
+  const pts = [...new Set([a, ...cuts, ...roots, b])].sort((u, v) => u - v);
+  // Stammfunktion für den Abschnitt um m (Funktionsaufrufe durch den dort gültigen Term ersetzt)
+  const cache = new Map();
+  const primAt = (m) => {
+    const trees = {};
+    for (const name in defs) {
+      const pc = defs[name].find(p => inInterval(p.iv, m));
+      if (pc) trees[name] = pc.tree;
+    }
+    const key = JSON.stringify(trees);
+    if (!cache.has(key)) {
+      const F = primitive(inlineCalls(integrand, trees));
+      cache.set(key, F && !JSON.stringify(F).includes('"user":true') ? { tree: F, fn: compile(F) } : null);
+    }
+    return cache.get(key);
+  };
+  let value = 0, area = 0, single = null;
+  for (let k = 0; k < pts.length - 1; k++) {
+    const u = pts[k], v = pts[k + 1];
+    const P = primAt((u + v) / 2);
+    if (!P) return null;
+    const part = P.fn(v) - P.fn(u);
+    if (!Number.isFinite(part)) return null;
+    value += part;
+    area += Math.abs(part);
+    single = single === null ? P : single === P ? single : false;
+  }
+  return { value: sign * value, area, F: single ? single.tree : null };
+}
 
 // Integral in Teilstücken; die Ränder jedes Stücks minimal nach innen, damit
 // an einer Sprungstelle der Wert des richtigen Abschnitts zählt
@@ -486,18 +535,19 @@ export function drawPlot(config, width, prepared, height) {
     }
     for (const r of c.rows) {
       if (!r.fn || r.entry.hidden) continue;
-      const iv = r.iv;
-      // Nur im erlaubten Bereich zeichnen (etwas hinein, damit die Randpunkte sauber sitzen)
-      const from = iv ? Math.max(xmin, iv.lo) : xmin, to = iv ? Math.min(xmax, iv.hi) : xmax;
-      if (to <= from) continue;
-      curves.append(s('path', { class: 'curve' + (r.entry.dashed ? ' dashed' : ''), d: trace(r.raw || r.fn, from, to), stroke: c.color }));
-      // Randpunkte: ausgefüllt, wenn der Rand dazugehört, sonst offen – wie im Heft
-      if (iv) {
-        for (const [xb, incl] of [[iv.lo, iv.loIncl], [iv.hi, iv.hiIncl]]) {
-          if (!Number.isFinite(xb) || xb < xmin || xb > xmax) continue;
-          let y = r.raw(xb);
-          if (!Number.isFinite(y)) y = r.raw(xb + (xb === iv.lo ? 1 : -1) * 1e-9 * Math.max(1, Math.abs(xb)));
-          if (Number.isFinite(y)) dots.push({ x: xb, y, incl, color: c.color });
+      // Jeden erlaubten Bereich für sich zeichnen (x < -1 oder x > 1 ergibt zwei Stücke)
+      for (const iv of r.iv || [null]) {
+        const from = iv ? Math.max(xmin, iv.lo) : xmin, to = iv ? Math.min(xmax, iv.hi) : xmax;
+        if (to <= from) continue;
+        curves.append(s('path', { class: 'curve' + (r.entry.dashed ? ' dashed' : ''), d: trace(r.raw || r.fn, from, to), stroke: c.color }));
+        // Randpunkte: ausgefüllt, wenn der Rand dazugehört, sonst offen – wie im Heft
+        if (iv) {
+          for (const [xb, incl] of [[iv.lo, iv.loIncl], [iv.hi, iv.hiIncl]]) {
+            if (!Number.isFinite(xb) || xb < xmin || xb > xmax) continue;
+            let y = r.raw(xb);
+            if (!Number.isFinite(y)) y = r.raw(xb + (xb === iv.lo ? 1 : -1) * 1e-9 * Math.max(1, Math.abs(xb)));
+            if (Number.isFinite(y)) dots.push({ x: xb, y, incl, color: c.color });
+          }
         }
       }
     }
@@ -583,6 +633,14 @@ export function drawPlot(config, width, prepared, height) {
 
 const texNum = (v, digits = 2) => formatNumber(v, digits).replace('−', '-').replace(',', '{,}');
 
+// Wert exakt, wenn möglich: = 9 · = 8/3 ≈ 2,67 · ≈ 1,23
+function valueTex(v) {
+  const f = toFraction(v);
+  if (f && f[1] === 1) return ` = ${f[0]}`;
+  if (f) return ` = ${f[0] < 0 ? '-' : ''}\\frac{${Math.abs(f[0])}}{${f[1]}} \\approx ${texNum(v)}`;
+  return ` \\approx ${texNum(v)}`;
+}
+
 function derivativeTex(P, name, d, prefix) {
   const pcs = P.defs && P.defs[name];
   const head = prefix || `${name}${"'".repeat(d)}(x) = `;
@@ -591,10 +649,10 @@ function derivativeTex(P, name, d, prefix) {
   if (parts.some(x => !x.t)) return null;
   const conds = P.list.filter(r => r.name === name && r.tree && r.kind === 'fn');
   if (parts.length > 1) {
-    return `${head}\\begin{cases} ${parts.map((x, i) => `${toTex(x.t)}, & ${conditionTex(conds[i] && conds[i].cond)}`).join(' \\\\ ')} \\end{cases}`;
+    return `${head}\\begin{cases} ${parts.map((x, i) => `${toTex(x.t)}, & ${conditionTex(conds[i] && conds[i].cond, P.params)}`).join(' \\\\ ')} \\end{cases}`;
   }
   const cond = conds.length === 1 && conds[0].cond;
-  return head + toTex(parts[0].t) + (cond ? `,\\; ${conditionTex(cond)}` : '');
+  return head + toTex(parts[0].t) + (cond ? `,\\; ${conditionTex(cond, P.params)}` : '');
 }
 
 export function legendItems(P) {
@@ -607,7 +665,7 @@ export function legendItems(P) {
     if (c.vertical) tex = 'x = ' + toTex(r.tree);
     else if (c.pieces) {
       const rows = c.rows.filter(x => x.tree);
-      tex = `${c.name}(x) = \\begin{cases} ${rows.map(x => `${toTex(x.tree)}, & ${conditionTex(x.cond)}`).join(' \\\\ ')} \\end{cases}`;
+      tex = `${c.name}(x) = \\begin{cases} ${rows.map(x => `${toTex(x.tree)}, & ${conditionTex(x.cond, P.params)}`).join(' \\\\ ')} \\end{cases}`;
     } else if (r.derivOf) {
       tex = derivativeTex(P, r.derivOf.f, r.derivOf.d) || `${c.label}(x)`;
     } else if (c.kind === 'tangent') {
@@ -626,18 +684,20 @@ export function legendItems(P) {
         const dt = derivativeTex(P, t.f, t.d, ' = ');
         if (dt) tex += dt;
       }
-      if (r.cond) tex += `,\\; ${conditionTex(r.cond)}`;
+      if (r.cond) tex += `,\\; ${conditionTex(r.cond, P.params)}`;
     }
     out.push({ color: c.color, tex, fallback: r.entry.expr });
   }
   for (const a of P.areas) {
     if (a.hidden) continue;
     const r = a.row, t = r.tree;
-    const approx = (v) => (Math.abs(v - Number(v.toFixed(2))) > 1e-7 * Math.max(1, Math.abs(v)) ? ' \\approx ' : ' = ') + texNum(v);
-    let tex = (r.name ? `${r.name} = ` : '') + toTex(t) + (Number.isFinite(a.value) ? approx(a.value) : ' = \\text{–}');
+    let tex = (r.name ? `${r.name} = ` : '') + toTex(t);
+    // Rechenweg wie im Heft: [F(x)] von a bis b
+    if (a.exact && a.exact.F) tex += ` = \\left[${toTex(a.exact.F)}\\right]_{${toTex(t.lo)}}^{${toTex(t.hi)}}`;
+    tex += Number.isFinite(a.value) ? valueTex(a.value) : ' = \\text{–}';
     // Wechselt der Graph das Vorzeichen, ist die Fläche größer als das Integral
-    if (Number.isFinite(a.area) && Number.isFinite(a.value) && Math.abs(Math.abs(a.value) - a.area) > 1e-3 * Math.max(1, a.area)) {
-      tex += `\\quad\\text{(Fläche${approx(a.area).includes('approx') ? ' ≈ ' : ': '}${texNum(a.area)})}`;
+    if (Number.isFinite(a.area) && Number.isFinite(a.value) && Math.abs(Math.abs(a.value) - a.area) > 1e-6 * Math.max(1, a.area)) {
+      tex += `\\qquad\\text{Fläche: }${valueTex(a.area).replace(/^ = /, '')}`;
     }
     out.push({ color: a.color, tex, area: true, fallback: r.entry.expr });
   }
@@ -861,9 +921,24 @@ function buildPanel(ed, b, panel) {
   // Zuletzt bearbeitete Zeile – dort setzen die Hilfsknöpfe an
   let focusIdx = 0;
 
+  // Zeilen als Formelfelder – wie bei Formeln: "integral", "wurzel", "/" …
+  // ergeben gleich die fertige Schreibweise mit Kästchen
+  let fields = [];
+  let pending = null; // nach dem Aufbau: { index, placeholder }
+  const texOf = (f) => (f.tex !== undefined ? f.tex : exprToLatex(f.expr));
+  const showState = (f, i) => {
+    const p = prepare(c).list.find(q => q.entry === f);
+    const bad = !!(p && p.error && String(f.expr || '').trim());
+    fields[i] && fields[i].classList.toggle('bad', bad);
+    const hint = p && p.cond && p.cond.hint;
+    err.classList.toggle('hint', !bad && !!hint);
+    err.textContent = bad ? `⚠︎ ${p.error}` : hint ? `ⓘ ${hint}` : '';
+  };
   const renderRows = () => {
     list.innerHTML = '';
+    fields = [];
     const prep = prepare(c);
+    const ready = [];
     c.functions.forEach((f, i) => {
       const info = prep.list.find(p => p.entry === f);
       const color = info && info.color || PLOT_COLORS[i % PLOT_COLORS.length];
@@ -877,48 +952,90 @@ function buildPanel(ed, b, panel) {
           grid.append(sw);
         }
       });
-      const input = h('input', { class: 'input' + (info && info.error ? ' bad' : ''), value: f.expr, placeholder: 'f(x) = x^2 - 2   ·   f(x) = x^2 für x < 3   ·   a = 2', spellcheck: 'false' });
-      input.addEventListener('focus', () => { focusIdx = i; });
-      input.addEventListener('input', () => {
-        f.expr = input.value;
-        const p = prepare(c).list.find(q => q.entry === f);
-        input.classList.toggle('bad', !!(p && p.error && input.value.trim()));
-        err.textContent = p && p.error && input.value.trim() ? `⚠︎ ${p.error}` : '';
-        repaint();
-      });
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          c.functions.splice(i + 1, 0, { expr: '' });
-          renderRows();
-          list.querySelectorAll('input')[i + 1]?.focus();
-        }
-        if (e.key === 'Escape') { e.preventDefault(); ed.deactivate({ select: true }); }
-        if (e.key === 'Backspace' && !input.value && c.functions.length > 1) {
-          e.preventDefault();
-          c.functions.splice(i, 1);
-          renderRows();
+      const slot = h('div', { class: 'fn-field' });
+      ready.push(createField({
+        value: texOf(f),
+        inline: true,
+        shortcuts: PLOT_SHORTCUTS,
+        onInput: (tex) => {
+          f.tex = tex;
+          f.expr = latexToExpr(tex);
+          showState(f, i);
           repaint();
-          list.querySelectorAll('input')[Math.max(0, i - 1)]?.focus();
+        },
+        onKey: (e, mf) => {
+          if (e.key === 'Enter') { addRow('', i + 1); return true; }
+          if (e.key === 'Escape') { ed.deactivate({ select: true }); return true; }
+          if (e.key === 'Backspace' && !mf.getValue('latex') && c.functions.length > 1) {
+            c.functions.splice(i, 1);
+            pending = { index: Math.max(0, i - 1), end: true };
+            renderRows();
+            repaint();
+            return true;
+          }
+          if (e.key === 'ArrowDown' && fields[i + 1]) { fields[i + 1].focus(); return true; }
+          if (e.key === 'ArrowUp' && i > 0 && fields[i - 1]) { fields[i - 1].focus(); return true; }
+          return false;
         }
-      });
+      }).then((mf) => {
+        mf.addEventListener('focus', () => { focusIdx = i; showState(f, i); });
+        // "für", "oder", "und" als Wort setzen und danach im Formelmodus weiterschreiben
+        // (erst wenn die Eingabe zur Ruhe gekommen ist – Tastendrücke kommen gebündelt an)
+        let wordTimer = null;
+        mf.addEventListener('input', () => {
+          clearTimeout(wordTimer);
+          wordTimer = setTimeout(() => {
+            if (mf.mode !== 'math') return;
+            const pos = mf.position;
+            const m = /(?:^|[^a-zA-Z\\])(für|fuer|oder|und)$/.exec(mf.getValue(0, pos));
+            if (!m) return;
+            const len = m[1].length;
+            if (mf.getValue(pos - len, pos) !== m[1]) return;
+            mf.selection = { ranges: [[pos - len, pos]] };
+            mf.insert(`\\text{ ${m[1] === 'fuer' ? 'für' : m[1]} }`, { insertionMode: 'replaceSelection', selectionMode: 'after' });
+            mf.executeCommand(['switchMode', 'math']);
+          }, 0);
+        });
+        mf.setAttribute('placeholder', i === 0 ? '\\text{z. B. } f(x)=x^2' : '');
+        fields[i] = mf;
+        slot.append(mf);
+        if (info && info.error && String(f.expr || '').trim()) mf.classList.add('bad');
+      }));
       const dash = h('button', { class: 'btn icon-only sm' + (f.dashed ? ' on' : ''), 'data-tip': 'Gestrichelt', html: '<svg class="icon sm" viewBox="0 0 24 24"><path d="M3 12h4M10 12h4M17 12h4"/></svg>' });
       dash.addEventListener('click', () => { f.dashed = !f.dashed || undefined; renderRows(); repaint(); });
-      const eye = h('button', { class: 'btn icon-only sm', 'data-tip': f.hidden ? 'Einblenden' : 'Ausblenden', html: icon(f.hidden ? 'eye' : 'eye', 'sm') });
+      const eye = h('button', { class: 'btn icon-only sm', 'data-tip': f.hidden ? 'Einblenden' : 'Ausblenden', html: icon('eye', 'sm') });
       eye.style.opacity = f.hidden ? 0.4 : 1;
       eye.addEventListener('click', () => { f.hidden = !f.hidden || undefined; renderRows(); repaint(); });
       const del = h('button', { class: 'btn icon-only sm', 'data-tip': 'Entfernen', html: icon('trash', 'sm') });
       del.addEventListener('click', () => { c.functions.splice(i, 1); if (!c.functions.length) c.functions.push({ expr: '' }); renderRows(); repaint(); });
-      list.append(h('div', { class: 'fn-row' }, dot, input, dash, eye, del));
+      list.append(h('div', { class: 'fn-row' }, dot, slot, dash, eye, del));
     });
+    return Promise.all(ready).then(() => {
+      if (!pending) return;
+      const { index, end } = pending;
+      pending = null;
+      const mf = fields[index];
+      if (!mf) return;
+      mf.focus();
+      focusIdx = index;
+      // Erstes Kästchen einer Vorlage auswählen, sonst ans Ende
+      if (!end && /\\placeholder/.test(mf.getValue('latex'))) { mf.position = 0; mf.executeCommand('moveToNextPlaceholder'); }
+      else mf.position = mf.lastOffset;
+    });
+  };
+  // Neue Zeile (LaTeX mit \placeholder{} für die Kästchen)
+  const addRow = (tex, at = Math.min(focusIdx + 1, c.functions.length)) => {
+    c.functions.splice(at, 0, { tex, expr: latexToExpr(tex) });
+    pending = { index: at };
+    renderRows();
+    repaint();
   };
   renderRows();
 
   const add = h('button', { class: 'btn sm outline' }, icon('plus', 'sm'), 'Funktion');
-  add.addEventListener('click', () => { c.functions.push({ expr: '' }); renderRows(); list.querySelectorAll('input')[c.functions.length - 1]?.focus(); });
+  add.addEventListener('click', () => addRow('', c.functions.length));
 
   // Hilfsknöpfe: Einschränkung, abschnittsweise, Ableitung, Tangente, Fläche
-  const inputs = () => list.querySelectorAll('input');
   const nameAt = (i) => {
     const prep = prepare(c);
     const r = prep.list.find(x => x.entry === c.functions[i]);
@@ -926,29 +1043,15 @@ function buildPanel(ed, b, panel) {
     const first = prep.list.find(x => x.name && x.kind === 'fn');
     return first ? first.name : 'f';
   };
-  const addRow = (expr, from = expr.length, to = from) => {
-    const at = Math.min(focusIdx + 1, c.functions.length);
-    c.functions.splice(at, 0, { expr });
-    renderRows();
-    repaint();
-    const inp = inputs()[at];
-    focusIdx = at;
-    if (inp) { inp.focus(); inp.setSelectionRange(from, to); }
-  };
-  const setRow = (i, expr, caret = expr.length) => {
-    const inp = inputs()[i];
-    if (!inp) return;
-    inp.value = expr;
-    inp.dispatchEvent(new Event('input'));
-    inp.focus();
-    inp.setSelectionRange(caret, caret);
-  };
-  const insertInRow = (text) => {
-    const inp = inputs()[focusIdx];
-    if (!inp) return;
-    inp.focus();
-    inp.setRangeText(text, inp.selectionStart ?? inp.value.length, inp.selectionEnd ?? inp.value.length, 'end');
-    inp.dispatchEvent(new Event('input'));
+  const hasCond = (f) => f && !!splitCondition(splitDefinition(f.expr || '').body).cond;
+  // In die aktuelle Zeile einfügen (am Ende oder an der Einfügemarke)
+  const insertInRow = (tex, { atEnd = false } = {}) => {
+    const mf = fields[focusIdx];
+    if (!mf) return;
+    mf.focus();
+    if (atEnd) mf.position = mf.lastOffset;
+    mf.insert(tex, { selectionMode: /#\?/.test(tex) ? 'placeholder' : 'after', format: 'latex' });
+    mf.dispatchEvent(new Event('input', { bubbles: true }));
   };
   const helpers = h('div', { class: 'chem-helpers plot-helpers' });
   const helper = (label, tip, fn) => {
@@ -956,23 +1059,20 @@ function buildPanel(ed, b, panel) {
     bt.addEventListener('mousedown', (e) => { e.preventDefault(); fn(); });
     helpers.append(bt);
   };
-  helper('Einschränken', 'Nur ein Teil des Graphen: „für x < 3“, „für 0 ≤ x ≤ 2“ oder „für x ∈ [0; 3[“', () => {
+  helper('Einschränken', 'Nur ein Teil des Graphen, z. B. für x < 3 oder für 0 ≤ x ≤ 2. Nochmal klicken: weitere Bedingung (mit ; getrennt)', () => {
     const f = c.functions[focusIdx];
     if (!f) return;
-    if (splitCondition(splitDefinition(f.expr).body).cond) { inputs()[focusIdx]?.focus(); return; }
-    setRow(focusIdx, f.expr.trimEnd() + ' für x < ');
+    insertInRow(hasCond(f) ? ';x>#?' : '\\text{ für }x<#?', { atEnd: true });
   });
-  helper('Abschnittsweise', 'Weiterer Abschnitt derselben Funktion (gleicher Name, andere Einschränkung)', () => {
+  helper('Abschnittsweise', 'Weiterer Abschnitt derselben Funktion (gleicher Name, anderer Bereich)', () => {
     const n = nameAt(focusIdx);
-    const f = c.functions[focusIdx];
-    if (f && !splitCondition(splitDefinition(f.expr).body).cond) setRow(focusIdx, f.expr.trimEnd() + ' für x < 0');
-    const expr = `${n}(x) =  für x ≥ 0`;
-    addRow(expr, n.length + 7);
+    if (!hasCond(c.functions[focusIdx])) insertInRow('\\text{ für }x<0', { atEnd: true });
+    addRow(`${n}(x)=\\placeholder{}\\text{ für }x\\ge0`);
   });
-  helper("f′ Ableitung", 'Graph der Ableitung – der abgeleitete Term steht in der Legende', () => addRow(`${nameAt(focusIdx)}'(x)`));
-  helper('Tangente', 'Tangente an der Stelle x = 1 (Normale: normale(f, 1))', () => { const e = `tangente(${nameAt(focusIdx)}, 1)`; addRow(e, e.length - 2, e.length - 1); });
-  helper('∫ Fläche', 'Fläche zwischen Graph und x-Achse von 0 bis 2 – mit Wert des Integrals. Zwischen zwei Graphen: ∫_0^2 (f(x) - g(x)) dx', () => { const e = `∫_0^2 ${nameAt(focusIdx)}(x) dx`; addRow(e, 2, 3); });
-  for (const sym of ['≤', '≥', '∈', '∞', 'π']) helper(sym, `„${sym}“ einfügen`, () => insertInRow(sym));
+  helper("f′ Ableitung", 'Graph der Ableitung – der abgeleitete Term steht in der Legende', () => addRow(`${nameAt(focusIdx)}^{\\prime}(x)`));
+  helper('Tangente', 'Tangente an der Stelle x = …', () => addRow(`\\operatorname{tangente}\\left(${nameAt(focusIdx)},\\placeholder{}\\right)`));
+  helper('∫ Fläche', 'Fläche zwischen Graph und x-Achse mit exaktem Wert – Grenzen in die Kästchen', () => addRow(`\\int_{\\placeholder{}}^{\\placeholder{}}${nameAt(focusIdx)}(x)\\,\\mathrm{d}x`));
+  for (const [sym, tex] of [['≤', '\\le'], ['≥', '\\ge'], ['∈', '\\in'], ['∞', '\\infty'], ['π', '\\pi']]) helper(sym, `„${sym}“ einfügen`, () => insertInRow(tex));
 
   const num = (key, label) => {
     const inp = h('input', { class: 'input', value: c[key] ?? '', placeholder: key.startsWith('y') ? 'auto' : '' });
@@ -1026,7 +1126,7 @@ function buildPanel(ed, b, panel) {
 
   panel.append(
     list,
-    h('div', { class: 'panel-row' }, add, h('span', { class: 'hint grow', text: 'Schreibweise wie im Heft: 0,5x^2 − 3 · sin x · √x · |x| · x^2 für x < 3 · f\'(x) · ∫_0^2 f(x) dx' })),
+    h('div', { class: 'panel-row' }, add, h('span', { class: 'hint grow', html: 'Tippen wie im Formelfeld: <b>wurzel</b>, <b>/</b> Bruch, <b>integral</b> … · <b>für</b> x &lt; 3 · mehrere Bedingungen mit <b>;</b> · f\'(x) · <kbd>Enter</kbd> neue Zeile' })),
     helpers,
     err,
     h('div', { class: 'panel-row' }, points),
