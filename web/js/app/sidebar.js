@@ -1,10 +1,10 @@
 // Seitenleiste: Suche, Favoriten, zuletzt geöffnet und der Ordnerbaum.
 
-import { h, esc, menu, promptDialog, confirmDialog, toast } from '../ui/ui.js';
+import { h, esc, menu, dialog, promptDialog, confirmDialog, toast } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { subjectColor, subjectOfFolder } from '../core/subjects.js';
 import { iconFor } from '../core/filetypes.js';
-import { call } from '../bridge.js';
+import { call, isPad } from '../bridge.js';
 
 const KIND_ICON = { group: 'folder', note: 'note', bundle: 'folder', pdf: 'pdf', image: 'image', file: 'file' };
 const isFolder = (n) => n.kind === 'group' || n.kind === 'bundle';
@@ -68,7 +68,7 @@ export class Sidebar {
     const footer = h('div', { class: 'side-footer' });
     const imp = h('div', { class: 'side-item' }, h('span', { html: icon('upload') }), h('span', { text: 'PDF importieren' }));
     imp.addEventListener('click', () => this.app.importPDF());
-    const scan = h('div', { class: 'side-item' }, h('span', { html: icon('camera') }), h('span', { text: 'Vom iPhone scannen' }));
+    const scan = h('div', { class: 'side-item' }, h('span', { html: icon('camera') }), h('span', { text: isPad ? 'Arbeitsblatt scannen' : 'Vom iPhone scannen' }));
     scan.addEventListener('click', (e) => this.app.scanFromPhone(e.currentTarget));
     const set = h('div', { class: 'side-item' }, h('span', { html: icon('gear') }), h('span', { text: 'Einstellungen' }), h('span', { class: 'kbd-hint', text: '⌘,' }));
     set.addEventListener('click', () => this.app.openSettings());
@@ -288,6 +288,8 @@ export class Sidebar {
       if (n.kind !== 'note' && n.kind !== 'bundle') items.push({ label: 'Öffnen mit …', icon: 'external', onSelect: () => app.openWithMenu(anchor, n.uuid) });
       items.push('-');
     }
+    // Mit dem Finger lässt sich in der Seitenleiste nicht zuverlässig ziehen
+    if (isPad) items.push({ label: 'Verschieben nach …', icon: 'folder', onSelect: () => this.moveDialog(n) });
     items.push(
       { label: 'Umbenennen', icon: 'pencil', onSelect: () => this.rename(n) },
       { label: isFav ? 'Aus Favoriten entfernen' : 'Zu Favoriten', icon: 'star', onSelect: () => app.toggleFavorite(n.uuid) },
@@ -297,6 +299,33 @@ export class Sidebar {
       { label: 'In den Papierkorb', icon: 'trash', danger: true, onSelect: () => this.trash(n) }
     );
     menu(anchor, items, { onClose: () => row && row.classList.remove('menu-open') });
+  }
+
+  // Ordner wählen und dorthin verschieben (iPad)
+  async moveDialog(n) {
+    const lib = this.lib;
+    const here = lib.parentOf(n.uuid);
+    const list = h('div', { class: 'move-list' });
+    let chosen = null;
+    const add = (node, depth) => {
+      if (node.uuid === n.uuid) return;
+      const row = h('button', { class: 'move-row' + (here && here.uuid === node.uuid ? ' here' : ''), style: { paddingLeft: 10 + depth * 18 + 'px' } },
+        h('span', { html: icon('folder', 'sm') }), h('span', { text: node.name }));
+      row.addEventListener('click', () => {
+        chosen = node.uuid;
+        for (const r of list.querySelectorAll('.move-row.on')) r.classList.remove('on');
+        row.classList.add('on');
+      });
+      list.append(row);
+      for (const c of node.children || []) if (c.kind === 'group') add(c, depth + 1);
+    };
+    add({ uuid: lib.root.uuid, name: lib.root.name || 'Datenbank', children: lib.nodes || lib.root.children || [] }, 0);
+    const d = dialog({
+      title: `„${n.name}“ verschieben`, body: list, center: true,
+      actions: [{ label: 'Abbrechen', value: null }, { label: 'Verschieben', value: 'ok', primary: true }]
+    });
+    if (await d.done !== 'ok' || !chosen || (here && chosen === here.uuid)) return;
+    await this.app.moveRecord(n.uuid, chosen);
   }
 
   async rename(n) {

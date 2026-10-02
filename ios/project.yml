@@ -1,0 +1,37 @@
+# iPad-Version von Heft – Projektbeschreibung für XcodeGen
+# (xcodegen generate → HeftPad.xcodeproj)
+name: HeftPad
+options:
+  bundleIdPrefix: de.timo
+  deploymentTarget:
+    iOS: "18.0"
+targets:
+  HeftPad:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: HeftPad
+      # Die Oberfläche ist dieselbe wie am Mac
+      - path: ../web
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.timo.heft.ipad
+        PRODUCT_NAME: Heft
+        TARGETED_DEVICE_FAMILY: "2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: CRFSWY37GV
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Heft
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: "Heft fotografiert Tafelbilder und Arbeitsblätter für deine Einträge."
+        INFOPLIST_KEY_UIStatusBarHidden: NO
+        MARKETING_VERSION: "1.7"
+        CURRENT_PROJECT_VERSION: "8"
+        SWIFT_VERSION: "5.0"
+        ENABLE_PREVIEWS: NO

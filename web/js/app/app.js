@@ -4,7 +4,7 @@
 
 import { h, esc, menu, toast, confirmDialog, promptDialog, initTooltips, debounce, formatDate, relativeTime, todayISO, mod } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { call, on, isNative, uuidFromLink, itemLink, touchAsset } from '../bridge.js';
+import { call, on, isNative, isPad, uuidFromLink, itemLink, touchAsset } from '../bridge.js';
 import { parseDocument, serializeDocument, block } from '../core/markdown.js';
 import { Editor } from '../editor/editor.js';
 import { Library } from './library.js';
@@ -39,7 +39,7 @@ export class App {
   }
 
   buildDOM() {
-    this.el = h('div', { id: 'app', class: isNative ? 'native' : '' });
+    this.el = h('div', { id: 'app', class: (isNative ? 'native' : '') + (isPad ? ' ipad' : '') });
     this.sidebar = new Sidebar(this);
     this.main = h('main', { class: 'main' });
     this.topbar = h('div', { class: 'topbar', 'data-drag-region': '' });
@@ -59,6 +59,8 @@ export class App {
     this.applyTheme();
     this.sidebar.el.style.display = 'none';
     this.renderTopbar();
+    // Auf dem iPad kommt alles fertig eingerichtet vom Mac (iCloud-Ordner)
+    if (isPad) { this.start(); return; }
     if (!this.settings.configured) { await renderOnboarding(this, this.view); return; }
     // Bei jedem Start zuerst die Datenbank wählen (im Browser-Testaufbau nicht)
     if (isNative) { await renderDatabasePicker(this, this.view); return; }
@@ -67,6 +69,8 @@ export class App {
 
   // Zur Datenbankauswahl zurück (Seitenleiste unten oder Menü „Ablage“)
   async switchDatabase() {
+    // Auf dem iPad bestimmt der Mac die Datenbank – stattdessen den Abgleich zeigen
+    if (isPad) { openSettings(this, 'ipad'); return; }
     await this.leaveNote();
     this.current = null;
     this.sidebar.el.style.display = 'none';
@@ -111,7 +115,8 @@ export class App {
   async checkDT(verbose) {
     try {
       const st = await call('dt.status');
-      if (st.running) this.sidebar.setStatus('', `DEVONthink · ${this.settings.databaseName || 'verbunden'}`);
+      if (st.label) this.sidebar.setStatus('', st.label);
+      else if (st.running) this.sidebar.setStatus('', `DEVONthink · ${this.settings.databaseName || 'verbunden'}`);
       else this.sidebar.setStatus('off', 'DEVONthink nicht gestartet');
       if (verbose) toast(st.running ? 'DEVONthink ist verbunden.' : 'DEVONthink läuft nicht – es wird beim nächsten Speichern gestartet.', { type: st.running ? 'success' : 'info' });
     } catch {
@@ -149,6 +154,8 @@ export class App {
     on('app-active', () => { this.lib.refresh(); this.checkDT(); this.reloadIfChanged(); });
     on('tree-changed', () => this.sidebar.renderTree());
     on('toast', ({ message, type }) => toast(message, { type }));
+    // Fenster am Mac geschlossen, Heft gleicht im Hintergrund weiter ab: jetzt speichern
+    on('window-hide', () => { this.saveNow(); });
     // Arbeitsblatt im PDF-Editor gespeichert → eingebettete Seiten neu laden
     // (die letzte Sicherung kommt oft erst an, wenn der Eintrag schon wieder offen ist)
     on('pdf-state', (st) => { if (st && st.saved && st.uuid) { touchAsset(st.uuid); if (this.editor) this.editor.refreshAssets(); } });
@@ -369,7 +376,7 @@ export class App {
     const q = (ic, label, fn, primary) => { const b = h('button', { class: 'btn ' + (primary ? 'primary' : 'outline') }, h('span', { html: icon(ic, 'sm') }), label); b.addEventListener('click', fn); qa.append(b); };
     q('plus', 'Neuer Eintrag', () => this.newNote(), true);
     q('upload', 'Arbeitsblatt importieren', () => this.importPDF());
-    q('camera', 'Vom iPhone scannen', (e) => this.scanFromPhone());
+    q('camera', isPad ? 'Arbeitsblatt scannen' : 'Vom iPhone scannen', (e) => this.scanFromPhone());
     q('search', 'Suchen', () => this.openPalette());
     home.append(qa);
     const recent = this.recent().map(u => this.lib.index.get(u)).filter(Boolean).slice(0, 9);
@@ -423,6 +430,10 @@ export class App {
 
   // Menü „Öffnen mit …“ – über DEVONthink, damit Änderungen in der Datenbank ankommen
   async openWithMenu(anchor, uuid) {
+    if (isPad) {
+      menu(anchor, [{ label: 'In DEVONthink To Go öffnen', icon: 'database', onSelect: () => call('record.reveal', { uuid }).catch(e => toast(e.message, { type: 'error' })) }]);
+      return;
+    }
     let apps = [];
     try { apps = await call('file.apps', { uuid }); } catch { apps = []; }
     const items = apps.map(a => ({ label: a.name + (a.default ? ' (Standard)' : ''), icon: 'external', onSelect: () => call('file.openWith', { uuid, app: a.default ? '' : a.name }) }));

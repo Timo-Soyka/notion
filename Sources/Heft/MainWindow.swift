@@ -325,10 +325,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BridgeHo
         emit("menu", ["cmd": "redo"])
     }
 
-    // Fenster schließen = App beenden; so läuft das Speichern über denselben Weg
+    // Fenster schließen = App beenden; so läuft das Speichern über denselben Weg.
+    // Mit iPad-Abgleich bleibt Heft im Hintergrund (das Fenster wird nur versteckt).
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         pdfEditor?.saveNow()
         docOverlay?.saveNow()
+        if Mirror.shared.enabled {
+            emit("window-hide", [:])
+            sender.orderOut(nil)
+            Mirror.shared.syncSoon(after: 2)
+            return false
+        }
         NSApp.terminate(sender)
         return false
     }

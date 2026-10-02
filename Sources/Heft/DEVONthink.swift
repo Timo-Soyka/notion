@@ -322,6 +322,22 @@ enum Scripts {
     }
     """#
 
+    // Pfade und Änderungsdaten mehrerer Datensätze auf einmal (für den iPad-Abgleich)
+    static let paths = #"""
+    function main(argv) {
+      const ids = JSON.parse(argv[0] || '[]');
+      const out = {};
+      for (const u of ids) {
+        try {
+          const r = dt.getRecordWithUuid(u);
+          let path = ''; try { path = r.path() || ''; } catch (e) {}
+          out[u] = { path, modified: iso(r.modificationDate()) };
+        } catch (e) {}
+      }
+      return out;
+    }
+    """#
+
     static let info = #"""
     function main(argv) {
       const r = rec(argv[0]);

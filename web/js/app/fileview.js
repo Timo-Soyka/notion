@@ -8,7 +8,7 @@
 
 import { h, esc, menu, toast, debounce } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { call, on, isNative } from '../bridge.js';
+import { call, on, isNative, isPad } from '../bridge.js';
 import { classify } from '../core/filetypes.js';
 import { ImageEditor } from './imageeditor.js';
 
@@ -147,7 +147,7 @@ class PreviewView {
     root.append(...bar, this.host);
     this.overlay = new NativeOverlay(this.host);
     if (!await this.overlay.open({ uuid: this.fv.uuid, mode: cls.media ? 'media' : 'quicklook' })) {
-      this.host.append(h('div', { class: 'file-empty' }, h('span', { html: icon('file') }), h('p', { text: `${cls.label} – die Vorschau gibt es nur in der Mac-App.` })));
+      this.host.append(h('div', { class: 'file-empty' }, h('span', { html: icon('file') }), h('p', { text: `${cls.label} – die Vorschau gibt es nur in der App.` })));
     }
   }
 
@@ -464,8 +464,10 @@ class RichView {
     btn('superscript', 'Hochgestellt', () => this.cmd('superscript'));
     btn('subscript', 'Tiefgestellt', () => this.cmd('subscript'));
     tb.append(h('span', { class: 'grow' }));
-    btn('zoomOut', 'Verkleinern', () => call('overlay.action', { cmd: 'zoomOut' }));
-    btn('zoomIn', 'Vergrößern', () => call('overlay.action', { cmd: 'zoomIn' }));
+    if (!isPad) {
+      btn('zoomOut', 'Verkleinern', () => call('overlay.action', { cmd: 'zoomOut' }));
+      btn('zoomIn', 'Vergrößern', () => call('overlay.action', { cmd: 'zoomIn' }));
+    }
     return tb;
   }
 

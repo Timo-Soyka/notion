@@ -1,6 +1,6 @@
 # Heft
 
-Heft ist eine Mac-App für Hefteinträge im Stil von Notion. Man schreibt in Blöcken, die man mit `/` einfügt. Die Einträge werden in einer DEVONthink-Datenbank gespeichert und darüber synchronisiert.
+Heft ist eine Mac-App für Hefteinträge im Stil von Notion. Man schreibt in Blöcken, die man mit `/` einfügt. Die Einträge werden in einer DEVONthink-Datenbank gespeichert und darüber synchronisiert. Dazu gibt es Heft fürs iPad – mit derselben Oberfläche und Apple-Pencil-Unterstützung.
 
 ## Funktionen
 
@@ -21,6 +21,11 @@ Heft ist eine Mac-App für Hefteinträge im Stil von Notion. Man schreibt in Bl�
 - **Zeilennummern** am Rand (jede, jede 5. oder jede 10. Zeile), auch im PDF.
 - **Schriftgröße** für alle Einträge in den Einstellungen, pro Eintrag anpassbar.
 - **Typst**: Formeln in Typst-Schreibweise werden beim Öffnen automatisch umgewandelt.
+- **iPad**: Dieselbe Oberfläche mit allen Einträgen, PDFs und Bildern. Mit dem Apple Pencil schreibt man Einträge per Hand (Scribble macht Maschinenschrift daraus) und füllt Arbeitsblätter aus: Stift, Textmarker, Formen, Radierer (Doppeltippen auf den Stift wechselt dorthin) und im Text-Werkzeug einfach aufs Blatt schreiben – an der Stelle entsteht ein Textfeld mit dem erkannten Text. Arbeitsblätter mit der Kamera scannen, Lange drücken öffnet das Kontextmenü.
+
+## iPad-Abgleich
+
+Das iPad arbeitet mit einer Kopie der Einträge in iCloud Drive. Am Mac in **Einstellungen → iPad** den „Abgleich mit dem iPad“ einschalten: Heft legt den Ordner „Heft“ in iCloud Drive an und hält ihn aktuell. Was man auf dem iPad ändert, landet als Auftrag in diesem Ordner, und Heft am Mac trägt es in DEVONthink ein. Dafür muss Heft am Mac laufen – mit eingeschaltetem Abgleich läuft es nach dem Schließen des Fensters im Hintergrund weiter (beenden mit ⌘Q), auf Wunsch auch ab der Anmeldung. Haben Mac und iPad denselben Eintrag geändert, legt Heft die iPad-Fassung als „… (iPad)“ daneben; es geht nichts verloren.
 
 ## Installation
 
@@ -40,6 +45,21 @@ Wer lieber das Terminal nutzt, kann die App nach dem Hineinziehen mit diesem Bef
 xattr -dr com.apple.quarantine /Applications/Heft.app
 ```
 
+### iPad
+
+Die iPad-App wird mit Xcode installiert (kostenloser Apple-Account genügt):
+
+1. iPad per Kabel an den Mac anschließen, „Diesem Computer vertrauen“ bestätigen und auf dem iPad den Entwicklermodus einschalten (Einstellungen → Datenschutz & Sicherheit).
+2. Im Terminal:
+   ```bash
+   cd ios && xcodegen generate && open HeftPad.xcodeproj
+   ```
+   In Xcode unter „Signing & Capabilities“ das eigene Team wählen, das iPad als Ziel auswählen und auf ▶ klicken.
+3. Beim ersten Start auf dem iPad: Einstellungen → Allgemein → VPN & Geräteverwaltung → dem eigenen Entwicklerzertifikat vertrauen.
+4. In Heft auf dem iPad den Ordner „Heft“ in iCloud Drive auswählen.
+
+Mit einem kostenlosen Account läuft die App 7 Tage und muss dann neu aufgespielt werden (Schritt 2 genügt). Mit einem bezahlten Entwicklerkonto gilt sie ein Jahr.
+
 ## Selbst bauen
 
 Dafür braucht man die Xcode Command Line Tools (`xcode-select --install`) und [Node.js](https://nodejs.org) für die Tests.
@@ -54,10 +74,11 @@ scripts/make-dmg.sh           # Installationsdatei → dist/Heft-<Version>.dmg
 
 | Ordner | Inhalt |
 | --- | --- |
-| `Sources/Heft` | Das Mac-Programm in Swift: Fenster, Verbindung zu DEVONthink, PDF-Export und PDF-Bearbeitung |
-| `web` | Die Oberfläche (HTML, CSS, JavaScript) mit Editor, Formeln, Graphen und Einstellungen |
+| `Sources/Heft` | Das Mac-Programm in Swift: Fenster, Verbindung zu DEVONthink, PDF-Export, PDF-Bearbeitung und iPad-Abgleich |
+| `ios` | Die iPad-App in Swift (XcodeGen-Projekt): Abgleich über iCloud Drive, PDF-Editor mit Apple Pencil, Scannen, Export |
+| `web` | Die Oberfläche (HTML, CSS, JavaScript) mit Editor, Formeln, Graphen und Einstellungen – auf Mac und iPad dieselbe |
 | `web/vendor` | Fremdbibliotheken: KaTeX, MathLive, highlight.js und SmilesDrawer, jeweils mit Lizenzdatei |
 | `tests` | Tests für Markdown, Formeln, Tabellen, Nummerierung und Breiten (`node tests/….test.mjs`) |
-| `scripts` | Skripte zum Bauen, für die Installationsdatei und für den Entwicklungsserver |
+| `scripts` | Skripte zum Bauen, für die Installationsdatei, den Entwicklungsserver und zum Testen der laufenden Apps (`scripts/debug`) |
 
 Jeder Eintrag wird in DEVONthink als Markdown-Datei gespeichert, zusammen mit einem PDF in einem gemeinsamen Ordner. So lassen sich die Einträge auch ohne Heft lesen.

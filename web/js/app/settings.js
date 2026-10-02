@@ -2,7 +2,7 @@
 
 import { h, esc, dialog, toast, menu } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { call, isNative } from '../bridge.js';
+import { call, isNative, isPad } from '../bridge.js';
 import { headingNumbers, listLabel, HEADING_STYLES, LIST_STYLES, ENTRY_FORMATS } from '../core/numbering.js';
 import { subjectColor, colorDot, SUBJECT_COLORS, COLOR_LABELS } from '../core/subjects.js';
 
@@ -245,6 +245,7 @@ export function openSettings(app, section = 'general') {
       for (const [a, b] of rows) t.append(h('tr', {}, h('td', { text: a }), h('td', { html: b.split(' ').map(k => k === '·' || k === '/' || k === 'oder' || k === '+' && false ? esc(k) : `<kbd>${esc(k)}</kbd>`).join(' ') })));
       return [h('h3', { text: 'Tastenkürzel' }), h('p', { class: 'desc', text: 'Fast alles wie in Notion.' }), t];
     }],
+    ipad: ['iPad', 'panelRight', () => ipadPage(app, save)],
     about: ['Über Heft', 'info', () => [
       h('h3', { text: 'Heft' }),
       h('p', { class: 'desc', text: 'Hefteinträge mit Blöcken, Formeln, Graphen und Chemie – gespeichert als Markdown in DEVONthink.' }),
@@ -259,12 +260,65 @@ export function openSettings(app, section = 'general') {
     body.innerHTML = '';
     body.append(...pages[key][2]());
   };
+  // Auf dem iPad gibt es keine direkte Verbindung zu DEVONthink – das macht der Mac
+  if (isPad) delete pages.devonthink;
+  if (!isNative) delete pages.ipad;
   for (const [key, [label, ic]] of Object.entries(pages)) {
     const b = h('button', { 'data-k': key, html: icon(ic) + esc(label) });
     b.addEventListener('click', () => show(key));
     nav.append(b);
   }
   show(section);
+}
+
+// Abgleich mit dem iPad über iCloud Drive (am Mac einschalten, auf dem iPad Stand zeigen)
+function ipadPage(app, save) {
+  const s = app.settings;
+  const status = h('div', { class: 'd', text: 'Wird geprüft …' });
+  const fmt = (iso) => {
+    if (!iso) return 'noch nie';
+    const sec = Math.round((Date.now() - Date.parse(iso)) / 1000);
+    if (sec < 60) return 'gerade eben';
+    if (sec < 3600) return `vor ${Math.round(sec / 60)} Min.`;
+    return new Date(iso).toLocaleString('de-DE', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+  const refresh = () => call('sync.info').then(info => {
+    if (isPad) { status.textContent = info.label || ''; return; }
+    if (!info.enabled) { status.textContent = 'Ausgeschaltet.'; return; }
+    status.textContent = info.error ? `Fehler: ${info.error}` : `Zuletzt abgeglichen: ${fmt(info.lastRun)}` + (info.log && info.log.length ? ` · ${info.log[info.log.length - 1]}` : '');
+    login.querySelector('input').checked = !!info.loginItem;
+  }).catch(() => { status.textContent = 'Nicht verfügbar.'; });
+  const now = h('button', { class: 'btn sm outline' }, 'Jetzt abgleichen');
+  now.addEventListener('click', async () => {
+    now.disabled = true;
+    try {
+      const r = await call('sync.now');
+      toast(r && r.orders ? `${r.orders} Änderung(en) vom iPad eingetragen.` : 'Abgeglichen.', { type: 'success' });
+    } catch (e) { toast('Abgleich fehlgeschlagen: ' + e.message, { type: 'error' }); }
+    now.disabled = false;
+    refresh();
+  });
+  const login = sw(false, async (v) => {
+    try { await call('app.loginItem', { enabled: v }); } catch (e) { toast('Nicht möglich: ' + e.message, { type: 'error' }); }
+    refresh();
+  });
+  refresh();
+  if (isPad) {
+    const change = h('button', { class: 'btn sm outline' }, 'Anderen Ordner wählen …');
+    change.addEventListener('click', () => call('mirror.reset'));
+    return [
+      h('h3', { text: 'Abgleich mit dem Mac' }),
+      h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund).' }),
+      h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change))
+    ];
+  }
+  return [
+    h('h3', { text: 'iPad' }),
+    h('p', { class: 'desc', text: 'Heft auf dem iPad arbeitet mit einer Kopie deiner Einträge in iCloud Drive (Ordner „Heft“). Was du auf dem iPad änderst, trägt Heft hier in DEVONthink ein. Haben Mac und iPad denselben Eintrag geändert, landet die iPad-Fassung als „… (iPad)“ daneben – es geht nichts verloren.' }),
+    row('Abgleich mit dem iPad', 'Legt die Kopie in iCloud Drive an und hält sie aktuell. Heft läuft dann beim Schließen des Fensters im Hintergrund weiter (beenden mit ⌘Q).', sw(s.ipadSync, async (v) => { await save({ ipadSync: v }); refresh(); })),
+    h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, now)),
+    row('Beim Anmelden starten', 'Heft startet mit dem Mac, damit Änderungen vom iPad auch ohne geöffnetes Fenster ankommen.', login)
+  ];
 }
 
 // Liste der Fächer mit Farbe, Name und Reihenfolge

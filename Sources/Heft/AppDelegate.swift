@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.showWindow(nil)
         main.window?.makeKeyAndOrderFront(nil)
         DebugHooks.startPolling(main: main)
+        // Abgleich mit dem iPad über iCloud Drive (wenn eingeschaltet)
+        Mirror.shared.onChange = { [weak self] in self?.main?.emit("tree-changed", [:]) }
+        if Mirror.shared.enabled { Mirror.shared.start() }
         NSApp.activate(ignoringOtherApps: true)
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
@@ -23,10 +26,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return main.prepareQuit() ? .terminateNow : .terminateLater
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !Mirror.shared.enabled }
+
+    // Klick aufs Dock-Symbol, während Heft im Hintergrund abgleicht: Fenster wieder zeigen
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { main?.showWindow(nil); main?.window?.makeKeyAndOrderFront(nil) }
+        return true
+    }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         main?.emit("app-active", [:])
+        Mirror.shared.syncSoon(after: 1)
     }
 
     // heft://open?uuid=… (z. B. aus dem URL-Feld eines Datensatzes in DEVONthink)

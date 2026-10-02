@@ -11,3 +11,5 @@ dist/
 .swiftpm/
 .vscode/
 .idea/
+ios/build/
+ios/*.xcodeproj/

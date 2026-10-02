@@ -7,6 +7,9 @@
 
 const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.heft;
 export const isNative = !!handler;
+// 'mac', 'ipad' (setzt die iPad-App vor dem Laden) oder 'web' (Browser-Testaufbau)
+export const platform = window.HeftPlatform || (isNative ? 'mac' : 'web');
+export const isPad = platform === 'ipad';
 
 const listeners = new Map();
 

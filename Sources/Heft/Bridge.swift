@@ -2,6 +2,7 @@ import AppKit
 import WebKit
 import PDFKit
 import UniformTypeIdentifiers
+import ServiceManagement
 
 // Brücke zwischen Oberfläche (JavaScript) und Mac-App.
 //
@@ -96,7 +97,32 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
 
         case "settings.set":
             let patch = a["settings"] as? [String: Any] ?? [:]
-            reply(.success(Store.shared.merge(patch)))
+            let merged = Store.shared.merge(patch)
+            if patch["ipadSync"] as? Bool == true { Mirror.shared.start() }
+            Mirror.shared.syncSoon()
+            reply(.success(merged))
+
+        case "sync.now":
+            Mirror.shared.syncNow { result in
+                switch result {
+                case .success(let r): reply(.success(r))
+                case .failure(let e): reply(.failure(e))
+                }
+            }
+
+        case "sync.info":
+            let m = Mirror.shared
+            var info: [String: Any] = ["enabled": m.enabled, "folder": m.root.path, "log": m.lastLog, "loginItem": SMAppService.mainApp.status == .enabled]
+            if let d = m.lastRun { info["lastRun"] = ISO8601DateFormatter().string(from: d) }
+            if let e = m.lastError { info["error"] = e }
+            reply(.success(info))
+
+        case "app.loginItem":
+            // Heft beim Anmelden starten (für den Abgleich im Hintergrund)
+            do {
+                if (a["enabled"] as? Bool) == true { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                reply(.success(SMAppService.mainApp.status == .enabled))
+            } catch { reply(.failure(error)) }
 
         case "print.ready":
             printCallback?(a)
@@ -151,6 +177,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 if let d = r as? [String: Any], d["treeChanged"] as? Bool == true {
                     DispatchQueue.main.async { self.host?.emit("tree-changed", [:]) }
                 }
+                Mirror.shared.syncSoon(after: 5)
                 return r
             }
 

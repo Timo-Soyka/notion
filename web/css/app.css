@@ -408,3 +408,23 @@
 .fs-step { width: 28px; padding: 0; justify-content: center; font-size: 16px; }
 .fs-value { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; }
 .fs-preview { max-width: 320px; text-align: right; color: var(--fg); line-height: 1.4; }
+
+/* ---------------------------------------------------------------------------
+   iPad: Finger und Apple Pencil
+   --------------------------------------------------------------------------- */
+.ipad .tree-row { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.ipad .blk-handle .grip, .ipad .sidebar-resizer, .ipad .tcol-resize, .ipad .col-resize, .ipad .plot-resize, .ipad .img-handle { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* Griffe zum Anfassen etwas breiter */
+.ipad .sidebar-resizer { width: 16px; right: -8px; }
+.ipad .tcol-resize { width: 16px; margin-left: -4px; }
+.ipad .img-handle { width: 14px; height: 60px; margin-top: -30px; }
+/* Ohne Maus gibt es kein Darüberfahren: Griffe am gewählten Block zeigen */
+.ipad .blk.selected .img-handle, .ipad .blk:focus-within .img-handle { opacity: 1; }
+.ipad .blk.editing .plot-resize, .ipad .blk.selected .plot-resize { opacity: 1; }
+.ipad .plot-resize { width: 28px; height: 28px; right: -12px; bottom: -12px; }
+.move-list { display: flex; flex-direction: column; max-height: 55vh; overflow: auto; min-width: 340px; margin: 4px 0; }
+.move-row { display: flex; align-items: center; gap: 8px; text-align: left; padding: 9px 10px; border-radius: 7px; font: inherit; color: var(--fg); background: none; border: 0; }
+.move-row .icon { color: var(--muted); }
+.move-row.here { color: var(--muted); }
+.move-row.on { background: var(--accent); color: #fff; }
+.move-row.on .icon { color: #fff; }
