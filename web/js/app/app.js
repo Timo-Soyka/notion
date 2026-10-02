@@ -358,8 +358,16 @@ export class App {
     this.view.classList.remove('no-scroll');
   }
 
+  // Jeder Wechsel der Ansicht bekommt eine Nummer. Wer nach einem await nicht
+  // mehr der neueste ist, hört auf – sonst landeten bei schnellem Doppelklick
+  // zwei Editoren untereinander in der Ansicht (und Getipptes im oberen ginge verloren).
+  navStart() { this._nav = (this._nav || 0) + 1; return this._nav; }
+  navStale(t) { return t !== this._nav; }
+
   async showHome() {
+    const t = this.navStart();
     await this.leaveNote();
+    if (this.navStale(t)) return;
     this.current = { kind: 'home' };
     localStorage.removeItem('heft-last');
     this.renderTopbar();
@@ -415,7 +423,9 @@ export class App {
   // Bilder, Text, Tabellen, Office-Dateien, Audio, Video … (alles außer Einträgen und PDFs)
   async openFile(uuid, opts = {}) {
     if (this.current && this.current.kind === 'file' && this.current.uuid === uuid && this.fileView) return;
+    const t = this.navStart();
     await this.leaveNote();
+    if (this.navStale(t)) return;
     const e = this.lib.index.get(uuid);
     this.current = { kind: 'file', uuid, name: e ? e.node.name : 'Datei', back: opts.back || null, backAt: opts.backAt || null };
     localStorage.setItem('heft-last', uuid);
@@ -444,16 +454,31 @@ export class App {
 
   async openNote(uuid, { focusTitle = false } = {}) {
     if (this.current && this.current.kind === 'note' && this.current.uuid === uuid && this.editor) return;
+    // Wird derselbe Eintrag gerade schon geöffnet: darauf warten statt ein zweites Mal
+    if (this._opening && this._opening.uuid === uuid) return this._opening.done;
+    const t = this.navStart();
+    const done = this.openNoteNow(uuid, t, focusTitle);
+    this._opening = { uuid, done };
+    try { await done; } finally { if (this._opening && this._opening.done === done) this._opening = null; }
+  }
+
+  async openNoteNow(uuid, t, focusTitle) {
     await this.leaveNote();
+    if (this.navStale(t)) return;
     const v = this.view;
     v.innerHTML = '';
     v.scrollTop = 0;
     let res;
     try { res = await call('note.read', { uuid }); }
     catch (e) {
+      if (this.navStale(t)) return;
       toast('Eintrag konnte nicht geöffnet werden: ' + e.message, { type: 'error' });
       return this.showHome();
     }
+    if (this.navStale(t)) return;
+    // Sicher ist sicher: nie zwei Editoren in derselben Ansicht
+    if (this.editor) { this.editor.destroy(); this.editor = null; }
+    v.innerHTML = '';
     const doc = parseDocument(res.markdown || '', { defaultTitle: stripNumber(res.name), recordName: res.name });
     if (!doc.meta.title && res.name && !doc.meta.heft) doc.meta.title = res.name;
     this.current = { kind: 'note', uuid, name: recordName(doc.meta) || res.name, modified: res.modified, loadedModified: res.modified };
@@ -472,7 +497,9 @@ export class App {
   }
 
   async openPDF(uuid, opts = {}) {
+    const t = this.navStart();
     await this.leaveNote();
+    if (this.navStale(t)) return;
     const e = this.lib.index.get(uuid);
     this.current = { kind: 'pdf', uuid, name: e ? e.node.name : 'PDF', back: opts.back || null, backAt: opts.backAt || null };
     localStorage.setItem('heft-last', uuid);
