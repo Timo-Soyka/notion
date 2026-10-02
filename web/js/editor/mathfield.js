@@ -214,23 +214,49 @@ export async function createField(opts = {}) {
   if (isPad) {
     let pointerAt = 0;
     let written = null;
+    let buffer = null;
+    const sinkEl = () => mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink');
     mf.addEventListener('pointerdown', () => { pointerAt = Date.now(); }, true);
     // Mit dem Stift in ein Feld geschrieben, das noch nicht aktiv war: hinten anfügen
     mf.addEventListener('focus', () => { if (Date.now() - pointerAt > 400) mf.position = mf.lastOffset; });
-    mf.addEventListener('beforeinput', (e) => {
-      // Nur echte Eingaben – MathLive meldet eigene Änderungen ebenfalls als beforeinput
-      if (!e.isTrusted || !['insertText', 'insertReplacementText'].includes(e.inputType) || !e.data) return;
-      const text = e.data.replace(/\s+/g, '');
-      if (text.length < 2 && text === e.data) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      // Neues, abgesetzt geschriebenes Wort direkt nach einer geschriebenen
-      // Wurzel, einem Bruch oder einer Hochzahl: erst heraus (wie Tab)
-      if (/^\s/.test(e.data) && written && written.end === mf.position && written.nested) mf.executeCommand('moveAfterParent');
-      const nested = text ? insertWritten(mf, text) : false;
+    // Gesammelte Handschrift in die Formel übernehmen
+    const flush = () => {
+      if (!buffer) return;
+      clearTimeout(buffer.timer);
+      document.removeEventListener('pointerdown', flush, true);
+      buffer = null;
+      mf.classList.remove('writing');
+      const sink = sinkEl();
+      const raw = sink ? sink.textContent : '';
+      if (sink) sink.textContent = '';
+      if (!raw.trim()) return;
+      const after = written && written.end === mf.position && written.nested;
+      const nested = insertWritten(mf, raw, after);
       written = { end: mf.position, nested };
       emit();
+    };
+    // Solange gesammelt wird, sieht MathLive die Eingaben nicht – Scribble darf
+    // sein Wort in Ruhe korrigieren (sonst würde daraus z. B. eine Rücktaste)
+    const hold = (e) => {
+      e.stopImmediatePropagation();
+      clearTimeout(buffer.timer);
+      buffer.timer = setTimeout(flush, 1100);
+    };
+    mf.addEventListener('beforeinput', (e) => {
+      // Nur echte Eingaben – MathLive meldet eigene Änderungen ebenfalls als beforeinput
+      if (!e.isTrusted) return;
+      if (buffer) { hold(e); return; }
+      if (!['insertText', 'insertReplacementText'].includes(e.inputType) || !e.data || e.data.length < 2) return;
+      // Ganzes Wort auf einmal: Handschrift (Scribble) oder ein Wortvorschlag
+      buffer = { timer: 0 };
+      mf.classList.add('writing');
+      document.addEventListener('pointerdown', flush, true);
+      hold(e);
     }, true);
+    mf.addEventListener('input', (e) => { if (buffer && e.isTrusted) hold(e); }, true);
+    // Taste gedrückt oder Feld verlassen: vorher übernehmen
+    mf.addEventListener('keydown', flush, true);
+    mf.addEventListener('blur', flush);
   }
 
   // Wurde gerade ein Punkt gesetzt? Dann sind folgende Ziffern seine ID.
@@ -447,8 +473,11 @@ export async function createField(opts = {}) {
 
 // Geschriebenen Text eingeben: Kürzel (längstes zuerst) als Vorlage einsetzen,
 // alles andere wie getippt – so wird "/" zum Bruch und "^" zur Hochzahl.
-// Ergebnis: ob dabei eine Vorlage (Wurzel, Bruch, Hochzahl …) entstanden ist
-function insertWritten(mf, text) {
+// Ein Leerzeichen nach einer so entstandenen Wurzel, einem Bruch oder einer
+// Hochzahl springt heraus (wie Tab). `inside`: Die Einfügemarke steht noch in
+// einer Vorlage aus der letzten Handschrift.
+// Ergebnis: ob die Einfügemarke am Ende in einer solchen Vorlage steht
+function insertWritten(mf, text, inside = false) {
   const map = mf.inlineShortcuts || {};
   const keys = Object.keys(map).filter(k => k.length > 1).sort((a, b) => b.length - a.length);
   const allowed = (v, prev) => {
@@ -456,8 +485,13 @@ function insertWritten(mf, text) {
     return v.after.split('+').some(c => (c === 'digit' && /\d/.test(prev)) || (c === 'closefence' && /[)\]}]/.test(prev)) || (c === 'letter' && /\p{L}/u.test(prev)));
   };
   let prev = '';
-  let nested = false;
+  let nested = inside;
   for (let i = 0; i < text.length;) {
+    if (/\s/.test(text[i])) {
+      if (nested) { mf.executeCommand('moveAfterParent'); nested = false; }
+      i += 1;
+      continue;
+    }
     const k = keys.find(key => text.startsWith(key, i) && allowed(map[key], prev));
     if (k) {
       const v = map[k];
@@ -474,7 +508,6 @@ function insertWritten(mf, text) {
     prev = ch;
     i += 1;
   }
-  // Steht die Einfügemarke danach in einer Wurzel, einem Bruch …?
   return nested;
 }
 

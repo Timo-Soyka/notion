@@ -996,6 +996,11 @@ export class Editor {
     if (!b) return;
     this.activeAtom = null;
     const el = this.elOf(b);
+    // Erst das Formelfeld verlassen (schließt offene Eingaben wie ´ oder
+    // Handschrift ab), dann neu zeichnen – sonst stolpert MathLive über das
+    // schon entfernte Feld
+    const focused = el && el.contains(document.activeElement) ? document.activeElement : null;
+    if (focused && focused.blur) focused.blur();
     if (el) {
       el.classList.remove('editing');
       const main = el.querySelector(':scope > .blk-main');

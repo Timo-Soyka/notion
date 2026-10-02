@@ -16,6 +16,7 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
     private var bridge: PadBridge!
     private var timer: Timer?
     var presenter: UIViewController? { self }
+    private let focusPolicy = FocusPolicy()
     private(set) var pdfEditor: PadPDFEditor?
     private(set) var overlay: PadOverlay?
 
@@ -50,6 +51,11 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         webView.allowsLinkPreview = false
         view.addSubview(webView)
         view.backgroundColor = .systemBackground
+        // Tastatur auch dann zeigen, wenn ein Feld erst kurz nach dem Antippen
+        // den Fokus bekommt (Formelfelder entstehen erst nach dem Tippen)
+        webView.addGestureRecognizer(TouchWatcher())
+        let setter = NSSelectorFromString("_setInputDelegate:")
+        if webView.responds(to: setter) { webView.perform(setter, with: focusPolicy) }
         webView.load(URLRequest(url: URL(string: "heft://app/index.html")!))
 
         // Neues vom Mac? Verzeichnis regelmäßig prüfen
@@ -176,6 +182,36 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         a.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in completionHandler(false) })
         a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
         present(a, animated: true)
+    }
+}
+
+// Merkt sich das letzte Antippen mit dem Finger – erkennt selbst nie etwas
+final class TouchWatcher: UIGestureRecognizer {
+    static var lastFingerTouch = Date.distantPast
+
+    override init(target: Any? = nil, action: Selector? = nil) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if touches.contains(where: { $0.type == .direct }) { Self.lastFingerTouch = Date() }
+        state = .failed
+    }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+}
+
+// WebKit fragt hier, ob ein Feld die Tastatur bekommt. Normalerweise nur, wenn
+// der Fokus direkt aus dem Antippen kommt – Formelfelder bekommen ihn aber erst
+// einen Moment später. Kurz nach einem Finger-Tipp deshalb ja, sonst wie immer
+// (beim Schreiben mit dem Pencil entscheidet weiter iPadOS).
+final class FocusPolicy: NSObject {
+    @objc(_webView:decidePolicyForFocusedElement:)
+    func decidePolicy(_ webView: WKWebView, focusedElement info: AnyObject) -> Int {
+        Date().timeIntervalSince(TouchWatcher.lastFingerTouch) < 1.5 ? 1 : 0   // 1 = zeigen, 0 = wie immer
     }
 }
 

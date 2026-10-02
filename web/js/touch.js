@@ -82,6 +82,39 @@ export function installTouch() {
     }, true);
   }
 
+  // --- Unsichtbare und eben erst erschienene Knöpfe ---
+  // Am Mac erscheinen viele Knöpfe erst beim Darüberfahren (⋮⋮ und + neben
+  // Blöcken, „Zeile anfügen“ an Tabellen, Knöpfe in der Seitenleiste …). Auf
+  // dem iPad kommen Darüberfahren und Klick im selben Antippen – man träfe
+  // Knöpfe, die man gar nicht gesehen hat, und bekäme neue Blöcke, Zeilen oder
+  // markierte Blöcke. Solche Klicks zählen nicht; das Antippen zeigt die
+  // Knöpfe nur, das nächste Antippen trifft sie dann.
+  const CONTROL = 'button, a[href], [role="button"], .table-add, .img-handle, .plot-resize, .col-resize, .tcol-resize';
+  let tap = null;
+  const shown = (el) => {
+    for (let x = el; x && x.nodeType === 1 && x !== document.body; x = x.parentElement) {
+      const cs = getComputedStyle(x);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity) < 0.2) return false;
+    }
+    return true;
+  };
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') { tap = null; return; }
+    const ctl = e.target.closest && e.target.closest(CONTROL);
+    tap = { target: e.target, ctl, visible: !ctl || shown(ctl), until: 0 };
+  }, true);
+  window.addEventListener('pointerup', (e) => { if (tap && e.pointerType !== 'mouse') tap.until = performance.now() + 800; }, true);
+  for (const type of ['mousedown', 'mouseup', 'click']) {
+    document.addEventListener(type, (e) => {
+      if (e.heftTouch || !tap || performance.now() > tap.until) return;
+      const ctl = e.target.closest && e.target.closest(CONTROL);
+      if (!ctl) return;
+      if ((tap.ctl === ctl || ctl.contains(tap.target)) && tap.visible) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
+  }
+
   // --- Doppeltippen auf Griffe ---
   let lastTap = null;
   let lastSynth = 0;
