@@ -350,5 +350,7 @@ async function paint(ed, b, wrap) {
   }
   if (!ed.readonly) wrap.append(mediaBar(ed, b, [{ icon: 'more', tip: 'Mehr', onClick: (btn) => ed.openBlockMenu(b, btn) }]));
   if (b.caption !== undefined && b.caption !== '' || b._cap) wrap.append(cap || captionEl(ed, b, 'Beschriftung …', 'fig'));
+  // Die Formel wird erst nach dem Laden gezeichnet – „Abbildung 1“ jetzt nachtragen
+  ed.renumberCaptions && ed.renumberCaptions();
   ed.notifyLayout && ed.notifyLayout();
 }

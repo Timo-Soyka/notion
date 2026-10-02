@@ -8,7 +8,7 @@
 
 import { h, menu, toast, confirmDialog } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { call, imageURL, touchAsset } from '../bridge.js';
+import { call, imageURL, touchAsset, isPad } from '../bridge.js';
 import * as M from '../core/imagemodel.js';
 
 const COLORS = [
@@ -238,7 +238,9 @@ export class ImageEditor {
     const label = (t) => h('span', { class: 'imged-label', text: t });
 
     if (ctx === 'select' && !o) {
-      p.append(h('span', { class: 'imged-hint', text: 'Objekt anklicken zum Bearbeiten · Doppelklick auf ein Textfeld ändert den Text · Entf löscht' }));
+      p.append(h('span', { class: 'imged-hint', text: isPad
+        ? 'Objekt antippen zum Bearbeiten · Doppeltippen auf ein Textfeld ändert den Text · zwei Finger verschieben und zoomen'
+        : 'Objekt anklicken zum Bearbeiten · Doppelklick auf ein Textfeld ändert den Text · Entf löscht' }));
       return;
     }
     if (['text', 'arrow', 'line', 'rect', 'ellipse', 'pen', 'badge'].includes(ctx)) {
@@ -470,6 +472,8 @@ export class ImageEditor {
 
   bindPointer() {
     const cv = this.canvas;
+    this.touches = new Map();
+    this.pinch = null;
     cv.addEventListener('pointerdown', (e) => this.down(e));
     cv.addEventListener('pointermove', (e) => this.move(e));
     cv.addEventListener('pointerup', (e) => this.up(e));
@@ -498,18 +502,53 @@ export class ImageEditor {
     const r = this.canvas.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     const { s, ox, oy } = this.view;
-    for (const hd of M.handles(o)) if (Math.hypot(ox + hd.x * s - mx, oy + hd.y * s - my) <= 8) return hd.id;
+    // Mit dem Finger braucht es mehr Platz als mit der Maus
+    const reach = e.pointerType === 'touch' ? 20 : e.pointerType === 'pen' ? 12 : 8;
+    for (const hd of M.handles(o)) if (Math.hypot(ox + hd.x * s - mx, oy + hd.y * s - my) <= reach) return hd.id;
     return null;
   }
 
+  // iPad: Zwei Finger verschieben und zoomen das Bild (wie das Trackpad am Mac).
+  // Begonnenes wird dabei verworfen – der erste Finger war nur der Anfang der Geste.
+  trackTouch(e) {
+    if (e.pointerType !== 'touch') return false;
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.touches.size < 2) return false;
+    const d = this.drag;
+    if (d && (d.kind === 'move' || d.kind === 'handle') && this.sel) Object.assign(this.sel, clone(d.orig));
+    this.drag = null;
+    this.draft = null;
+    const [a, b] = [...this.touches.values()];
+    const r = this.canvas.getBoundingClientRect();
+    this.pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2 - r.left, my: (a.y + b.y) / 2 - r.top, view: { ...this.view } };
+    this.draw();
+    return true;
+  }
+
+  movePinch() {
+    const [a, b] = [...this.touches.values()];
+    const r = this.canvas.getBoundingClientRect();
+    const p = this.pinch;
+    const s = Math.min(16, Math.max(0.02, p.view.s * Math.hypot(a.x - b.x, a.y - b.y) / p.d0));
+    const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+    // Der Bildpunkt unter der Fingermitte bleibt unter der Fingermitte
+    const ix = (p.mx - p.view.ox) / p.view.s, iy = (p.my - p.view.oy) / p.view.s;
+    this.view = { s, ox: mx - ix * s, oy: my - iy * s };
+    this.fitMode = false;
+    this.updateZoom();
+    this.draw();
+    if (this.editing) this.positionEditor();
+  }
+
   down(e) {
+    if (this.trackTouch(e) || this.pinch) return;
     if (e.button === 1 || (e.button === 0 && this.spaceDown)) { this.startPan(e); return; }
     if (e.button !== 0) return;
     this.stage.focus({ preventScroll: true });
     if (this.editing) { this.endEdit(); if (this.tool === 'select') return; }
     this.canvas.setPointerCapture(e.pointerId);
     const p = this.toSpace(e);
-    const tol = 6 / this.view.s;
+    const tol = (e.pointerType === 'touch' ? 14 : 6) / this.view.s;
     const L = this.L;
     const D = M.defaults(L);
     this.moved = false;
@@ -574,6 +613,8 @@ export class ImageEditor {
   }
 
   move(e) {
+    if (this.touches.has(e.pointerId)) this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pinch) { if (this.touches.size >= 2) this.movePinch(); return; }
     const d = this.drag;
     if (!d) {
       // Mauszeiger über Griffen/Objekten anpassen
@@ -642,6 +683,12 @@ export class ImageEditor {
   }
 
   up(e) {
+    this.touches.delete(e.pointerId);
+    if (this.pinch) {
+      if (this.touches.size < 2) this.pinch = null;
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch { /* egal */ }
+      return;
+    }
     const d = this.drag;
     this.drag = null;
     this.stage.classList.remove('panning');

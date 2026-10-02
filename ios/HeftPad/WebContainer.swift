@@ -29,6 +29,16 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         // Die Oberfläche soll wissen, dass sie auf dem iPad läuft
         ucc.addUserScript(WKUserScript(source: "window.HeftPlatform = 'ipad'; document.documentElement.classList.add('ipad');",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        #if DEBUG
+        // Fehler der Oberfläche sammeln (zum Abfragen über die Testschnittstelle)
+        ucc.addUserScript(WKUserScript(source: """
+            window.__heftErrors = [];
+            window.addEventListener('error', e => __heftErrors.push('Fehler: ' + e.message + ' @' + (e.filename||'').split('/').pop() + ':' + e.lineno));
+            window.addEventListener('unhandledrejection', e => __heftErrors.push('Promise: ' + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
+            const ce = console.error.bind(console);
+            console.error = (...a) => { __heftErrors.push('console: ' + a.map(String).join(' ')); ce(...a); };
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        #endif
         config.userContentController = ucc
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         webView = WKWebView(frame: view.bounds, configuration: config)

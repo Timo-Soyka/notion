@@ -410,7 +410,8 @@ final class HeftPDFView: PDFView {
             if let ann = page.annotation(at: p), ann.type == "FreeText" { beginEditing(ann, on: page); return }
             let h = ed.fontSize * 1.5
             let ann = PDFAnnotation(bounds: NSRect(x: p.x, y: p.y - h / 2, width: 180, height: h), forType: .freeText, withProperties: nil)
-            ann.font = NSFont.systemFont(ofSize: ed.fontSize)
+            // Helvetica statt Systemschrift: die kennt jedes PDF-Programm (sonst erscheint Times)
+            ann.font = NSFont(name: "Helvetica", size: ed.fontSize) ?? NSFont.systemFont(ofSize: ed.fontSize)
             ann.fontColor = ed.color
             ann.color = .clear
             let border = PDFBorder()

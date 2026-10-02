@@ -8,6 +8,7 @@
 
 import { markColor, markName, cleanFieldLatex } from '../core/mathlines.js';
 import { menu, promptDialog } from '../ui/ui.js';
+import { isPad } from '../bridge.js';
 
 let loading = null;
 
@@ -16,7 +17,8 @@ export function loadMathLive() {
   if (!loading) {
     loading = import('../../vendor/mathlive/mathlive.min.mjs').then((ML) => {
       const MFE = ML.MathfieldElement;
-      MFE.fontsDirectory = '../katex/fonts';
+      // Absolut angeben: Aus WebKits Fehlerstapel kann MathLive den eigenen Ort nicht ablesen
+      MFE.fontsDirectory = new URL('../../vendor/katex/fonts', import.meta.url).href;
       MFE.soundsDirectory = null;
       MFE.decimalSeparator = ',';
       return ML;
@@ -200,8 +202,36 @@ export async function createField(opts = {}) {
     };
     mf.inlineShortcuts = { ...shortcuts(mf.inlineShortcuts), ...(opts.shortcuts || {}) };
     mf.value = opts.value || '';
+    // iPad: normale Bildschirmtastatur statt keiner (MathLive schaltet sie ab)
+    const sink = isPad && mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink');
+    if (sink) sink.setAttribute('inputmode', 'text');
     opts.onMount && opts.onMount(mf);
   }, { once: true });
+
+  // Handschrift mit dem Apple Pencil (Scribble) kommt als ganzes Wort an statt
+  // Taste für Taste – dann greifen die Kürzel nicht ("wurzel" bliebe Text).
+  // Deshalb Zeichen für Zeichen eingeben und Kürzel selbst auflösen.
+  if (isPad) {
+    let pointerAt = 0;
+    let written = null;
+    mf.addEventListener('pointerdown', () => { pointerAt = Date.now(); }, true);
+    // Mit dem Stift in ein Feld geschrieben, das noch nicht aktiv war: hinten anfügen
+    mf.addEventListener('focus', () => { if (Date.now() - pointerAt > 400) mf.position = mf.lastOffset; });
+    mf.addEventListener('beforeinput', (e) => {
+      // Nur echte Eingaben – MathLive meldet eigene Änderungen ebenfalls als beforeinput
+      if (!e.isTrusted || !['insertText', 'insertReplacementText'].includes(e.inputType) || !e.data) return;
+      const text = e.data.replace(/\s+/g, '');
+      if (text.length < 2 && text === e.data) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // Neues, abgesetzt geschriebenes Wort direkt nach einer geschriebenen
+      // Wurzel, einem Bruch oder einer Hochzahl: erst heraus (wie Tab)
+      if (/^\s/.test(e.data) && written && written.end === mf.position && written.nested) mf.executeCommand('moveAfterParent');
+      const nested = text ? insertWritten(mf, text) : false;
+      written = { end: mf.position, nested };
+      emit();
+    }, true);
+  }
 
   // Wurde gerade ein Punkt gesetzt? Dann sind folgende Ziffern seine ID.
   let fresh = null;
@@ -413,6 +443,39 @@ export async function createField(opts = {}) {
     openContextMenu(mf, e, opts, emit);
   }, true);
   return mf;
+}
+
+// Geschriebenen Text eingeben: Kürzel (längstes zuerst) als Vorlage einsetzen,
+// alles andere wie getippt – so wird "/" zum Bruch und "^" zur Hochzahl.
+// Ergebnis: ob dabei eine Vorlage (Wurzel, Bruch, Hochzahl …) entstanden ist
+function insertWritten(mf, text) {
+  const map = mf.inlineShortcuts || {};
+  const keys = Object.keys(map).filter(k => k.length > 1).sort((a, b) => b.length - a.length);
+  const allowed = (v, prev) => {
+    if (!v || typeof v !== 'object' || !v.after) return true;
+    return v.after.split('+').some(c => (c === 'digit' && /\d/.test(prev)) || (c === 'closefence' && /[)\]}]/.test(prev)) || (c === 'letter' && /\p{L}/u.test(prev)));
+  };
+  let prev = '';
+  let nested = false;
+  for (let i = 0; i < text.length;) {
+    const k = keys.find(key => text.startsWith(key, i) && allowed(map[key], prev));
+    if (k) {
+      const v = map[k];
+      const tex = typeof v === 'string' ? v : v.value;
+      mf.insert(tex, { format: 'latex', selectionMode: tex.includes('#?') ? 'placeholder' : 'after' });
+      if (tex.includes('#?')) nested = true;
+      prev = k[k.length - 1];
+      i += k.length;
+      continue;
+    }
+    const ch = text[i];
+    mf.executeCommand(['typedText', ch, { simulateKeystroke: true }]);
+    if ('^_/'.includes(ch)) nested = true;
+    prev = ch;
+    i += 1;
+  }
+  // Steht die Einfügemarke danach in einer Wurzel, einem Bruch …?
+  return nested;
 }
 
 export function value(mf) {

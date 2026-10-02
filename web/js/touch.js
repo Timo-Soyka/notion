@@ -9,7 +9,7 @@
 
 const DRAG = '.blk-handle .grip, .sidebar-resizer, .tcol-resize, .col-resize, .plot-resize, .img-handle, .blk.editing .plot-svg';
 const CONTEXT = '.tree-row, .tcol-resize, .col-resize, .blk-text .am';
-const DOUBLE = '.tcol-resize, .col-resize, .plot-resize, .img-handle';
+const DOUBLE = '.tcol-resize, .col-resize, .plot-resize, .img-handle, .imged-stage canvas';
 const LONG_PRESS_MS = 480;
 
 function fire(target, type, src, extra = {}) {
@@ -50,38 +50,37 @@ export function installTouch() {
   window.addEventListener('pointercancel', endDrag, true);
 
   // --- Lange drücken = Kontextmenü ---
+  // Das Menü kommt beim Loslassen: So bleibt Halten und Ziehen frei für das
+  // Verschieben (Seitenleiste), und iPadOS schließt das Menü nicht gleich wieder.
   let press = null;
-  let swallowClick = false;
-  const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } };
+  let swallowUntil = 0;
+  const cancelPress = () => { press = null; };
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') return;
-    cancelPress();
     const t = e.target.closest && e.target.closest(CONTEXT);
-    if (!t) return;
-    const start = { clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY };
-    press = {
-      id: e.pointerId, x: e.clientX, y: e.clientY,
-      timer: setTimeout(() => {
-        press = null;
-        if (drag && drag.target === t) { fire(t, 'mouseup', start); drag = null; }
-        if (!fire(t, 'contextmenu', start)) swallowClick = true;
-      }, LONG_PRESS_MS)
-    };
+    press = t ? { id: e.pointerId, x: e.clientX, y: e.clientY, at: performance.now(), t } : null;
   }, true);
   window.addEventListener('pointermove', (e) => {
     if (press && e.pointerId === press.id && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress();
   }, true);
-  window.addEventListener('pointerup', cancelPress, true);
-  window.addEventListener('pointercancel', cancelPress, true);
-  document.addEventListener('dragstart', cancelPress, true);
-  document.addEventListener('scroll', cancelPress, true);
-  // Nach dem Menü nicht auch noch den Eintrag öffnen
-  document.addEventListener('click', (e) => {
-    if (!swallowClick) return;
-    swallowClick = false;
-    e.preventDefault();
-    e.stopPropagation();
+  window.addEventListener('pointerup', (e) => {
+    const p = press;
+    press = null;
+    if (!p || e.pointerId !== p.id || performance.now() - p.at < LONG_PRESS_MS) return;
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10) return;
+    if (drag && drag.target === p.t) { fire(p.t, 'mouseup', e); drag = null; }
+    // Nachgemachte Maus-Ereignisse (Antippen) würden das Menü sofort wieder schließen
+    swallowUntil = performance.now() + 700;
+    fire(p.t, 'contextmenu', { clientX: p.x, clientY: p.y, screenX: e.screenX, screenY: e.screenY });
   }, true);
+  window.addEventListener('pointercancel', cancelPress, true);
+  for (const type of ['mousedown', 'mouseup', 'click']) {
+    document.addEventListener(type, (e) => {
+      if (e.heftTouch || performance.now() > swallowUntil) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
+  }
 
   // --- Doppeltippen auf Griffe ---
   let lastTap = null;

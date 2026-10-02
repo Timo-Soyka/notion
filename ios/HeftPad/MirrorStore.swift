@@ -73,6 +73,14 @@ final class MirrorStore {
     /// Ordner aus dem Lesezeichen wieder öffnen (beim Start)
     @discardableResult
     func openFolder() -> Bool {
+        #if DEBUG
+        // Zum Testen im Simulator: Ordner direkt angeben (Startargument -HeftFolder /Pfad)
+        if let path = UserDefaults.standard.string(forKey: "HeftFolder") {
+            root = URL(fileURLWithPath: path, isDirectory: true)
+            loadState()
+            return true
+        }
+        #endif
         guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else { return false }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else { return false }

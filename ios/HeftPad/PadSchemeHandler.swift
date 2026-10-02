@@ -12,7 +12,13 @@ import UniformTypeIdentifiers
 //   heft://image/<UUID>       → Bild (aufrecht gedreht, für den Bildeditor)
 
 final class PadSchemeHandler: NSObject, WKURLSchemeHandler {
-    private let webRoot = Bundle.main.resourceURL!.appendingPathComponent("web", isDirectory: true)
+    private let webRoot: URL = {
+        #if DEBUG
+        // Zum Testen im Simulator: Oberfläche direkt aus dem Quellordner (-HeftWebRoot /Pfad/web)
+        if let path = UserDefaults.standard.string(forKey: "HeftWebRoot") { return URL(fileURLWithPath: path, isDirectory: true) }
+        #endif
+        return Bundle.main.resourceURL!.appendingPathComponent("web", isDirectory: true)
+    }()
     private let work = DispatchQueue(label: "heft.scheme", qos: .userInitiated, attributes: .concurrent)
     private var active = Set<ObjectIdentifier>()
     private let lock = NSLock()

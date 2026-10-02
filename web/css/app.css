@@ -428,3 +428,13 @@
 .move-row.here { color: var(--muted); }
 .move-row.on { background: var(--accent); color: #fff; }
 .move-row.on .icon { color: #fff; }
+/* Formelfelder: Das eigentliche Eingabefeld von MathLive ist unsichtbar und
+   null Pixel groß – der Apple Pencil (Scribble) findet dort nichts zum
+   Hineinschreiben. Auf dem iPad liegt es deshalb (durchsichtig) über dem Feld. */
+html.ipad math-field { position: relative; }
+html.ipad math-field::part(keyboard-sink) {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  clip: auto; clip-path: none; pointer-events: auto; z-index: 1;
+  color: transparent; caret-color: transparent; background: transparent;
+  font-size: 16px; line-height: normal; overflow: hidden; white-space: nowrap;
+}

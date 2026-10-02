@@ -112,6 +112,16 @@ final class PadPDFEditor: UIView, UIPencilInteractionDelegate {
         changed()
     }
 
+    func moved(_ ann: PDFAnnotation, on page: PDFPage, from old: CGRect) {
+        let now = ann.bounds
+        undo.registerUndo(withTarget: self) { me in
+            ann.bounds = old
+            me.pdfView.annotationsChanged(on: page)
+            me.moved(ann, on: page, from: now)
+        }
+        changed()
+    }
+
     func changed() {
         dirty = true
         if firstUnsaved == nil { firstUnsaved = Date() }
@@ -400,6 +410,11 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
     private var textTap: UITapGestureRecognizer!
     private var editTap: UITapGestureRecognizer!
     private let editGate = GestureGate()
+    private var moveGesture: UILongPressGestureRecognizer!
+    private let moveGate = GestureGate()
+    private var moving: (ann: PDFAnnotation, page: PDFPage, start: CGPoint, orig: CGRect)?
+    private let moveFrame = CAShapeLayer()
+    private var lastMoveEnd = Date.distantPast
 
     private(set) var textView: UITextView?
     private var editingAnnotation: PDFAnnotation?
@@ -432,6 +447,20 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
         editGate.shouldBegin = { [weak self] g in self?.editTapShouldBegin(g) ?? false }
         editTap.delegate = editGate
         addGestureRecognizer(editTap)
+
+        // Kurz gedrückt halten und ziehen: Textfeld, Zeichnung oder Form verschieben
+        moveGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleMove(_:)))
+        moveGesture.minimumPressDuration = 0.3
+        moveGesture.allowableMovement = 14
+        moveGesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue), NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+        moveGate.shouldBegin = { [weak self] g in self?.movableAnnotation(at: g.location(in: g.view)) != nil }
+        moveGesture.delegate = moveGate
+        addGestureRecognizer(moveGesture)
+        moveFrame.fillColor = nil
+        moveFrame.strokeColor = UIColor.systemBlue.cgColor
+        moveFrame.lineWidth = 1.5
+        moveFrame.lineDashPattern = [5, 3]
+        previewView.layer.addSublayer(moveFrame)
 
         addInteraction(UIIndirectScribbleInteraction(delegate: self))
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
@@ -468,6 +497,8 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
     }
 
     func toolChanged() {
+        // Eine übrig gebliebene Textauswahl samt Menü nicht mitnehmen
+        if tool != "select" { clearSelection() }
         let drawing = PadPDFEditor.drawingTools.contains(tool) || tool == "eraser"
         drawGesture.isEnabled = drawing
         // Mit dem Finger nur zeichnen, wenn das iPad nicht auf „Nur Apple Pencil“ steht
@@ -476,6 +507,54 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
         drawGesture.allowedTouchTypes = types
         textTap.isEnabled = tool == "text"
         if !drawing { preview.path = nil; dragPage = nil }
+    }
+
+    // MARK: Verschieben
+
+    // Was sich verschieben lässt: alles, was man selbst hinzugefügt hat – außer
+    // Textmarkierungen (die gehören zum Text darunter), Links und Formularfeldern
+    private func movableAnnotation(at vp: CGPoint) -> (PDFPage, PDFAnnotation)? {
+        guard !PadPDFEditor.drawingTools.contains(tool), tool != "eraser",
+              let (page, p) = pagePoint(vp), let ann = page.annotation(at: p) else { return nil }
+        let fixed: Set<String> = ["Link", "Widget", "Highlight", "Underline", "StrikeOut", "Squiggly", "Popup"]
+        return fixed.contains(ann.type ?? "") ? nil : (page, ann)
+    }
+
+    @objc private func handleMove(_ g: UILongPressGestureRecognizer) {
+        guard let ed = editor else { return }
+        let vp = g.location(in: self)
+        switch g.state {
+        case .began:
+            guard let (page, ann) = movableAnnotation(at: vp) else { return }
+            endTextEditing(commit: true)
+            moving = (ann, page, convert(vp, to: page), ann.bounds)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showMoveFrame()
+        case .changed:
+            guard let m = moving else { return }
+            let p = convert(vp, to: m.page)
+            var r = m.orig.offsetBy(dx: p.x - m.start.x, dy: p.y - m.start.y)
+            // Auf der Seite bleiben
+            let box = m.page.bounds(for: .cropBox)
+            r.origin.x = min(max(r.minX, box.minX - r.width / 2), box.maxX - r.width / 2)
+            r.origin.y = min(max(r.minY, box.minY - r.height / 2), box.maxY - r.height / 2)
+            m.ann.bounds = r
+            annotationsChanged(on: m.page)
+            showMoveFrame()
+        case .ended, .cancelled, .failed:
+            moveFrame.path = nil
+            guard let m = moving else { return }
+            moving = nil
+            lastMoveEnd = Date()
+            if m.ann.bounds != m.orig { ed.moved(m.ann, on: m.page, from: m.orig) }
+        default:
+            break
+        }
+    }
+
+    private func showMoveFrame() {
+        guard let m = moving else { moveFrame.path = nil; return }
+        moveFrame.path = UIBezierPath(rect: convert(m.ann.bounds, from: m.page).insetBy(dx: -3, dy: -3)).cgPath
     }
 
     // Doppeltippen auf ein Textfeld im Auswahlmodus: bearbeiten
@@ -669,6 +748,8 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
     // MARK: Textfelder
 
     @objc private func handleTextTap(_ g: UITapGestureRecognizer) {
+        // Das Loslassen nach dem Verschieben ist kein neues Textfeld
+        if moving != nil || Date().timeIntervalSince(lastMoveEnd) < 0.4 { return }
         guard let (page, p) = pagePoint(g.location(in: self)) else { return }
         if let ann = page.annotation(at: p), ann.type == "FreeText", ann !== editingAnnotation {
             beginEditing(ann, on: page)
@@ -688,7 +769,8 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
         guard let ed = editor else { return nil }
         let h = ed.fontSize * 1.5
         let ann = PDFAnnotation(bounds: CGRect(x: p.x, y: p.y - h / 2, width: 180, height: h), forType: .freeText, withProperties: nil)
-        ann.font = UIFont.systemFont(ofSize: ed.fontSize)
+        // Helvetica statt Systemschrift: die kennt jedes PDF-Programm (sonst erscheint Times)
+        ann.font = UIFont(name: "Helvetica", size: ed.fontSize) ?? UIFont.systemFont(ofSize: ed.fontSize)
         ann.fontColor = ed.color
         ann.color = .clear
         let border = PDFBorder()
@@ -732,7 +814,7 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
     private func positionTextView() {
         guard let tv = textView, let ann = editingAnnotation, let page = editingPage else { return }
         let fontSize = (ann.font?.pointSize ?? 14) * scaleFactor
-        if tv.font?.pointSize != fontSize { tv.font = UIFont.systemFont(ofSize: fontSize) }
+        if tv.font?.pointSize != fontSize { tv.font = ann.font?.withSize(fontSize) ?? UIFont.systemFont(ofSize: fontSize) }
         let topLeft = convert(CGPoint(x: ann.bounds.minX, y: ann.bounds.maxY), from: page)
         let pageRight = convert(CGPoint(x: page.bounds(for: .cropBox).maxX, y: 0), from: page).x
         let maxW = max(80, pageRight - topLeft.x - 4)

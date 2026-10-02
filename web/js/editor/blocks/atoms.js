@@ -153,7 +153,8 @@ async function mathFields(ed, b, atom, view) {
     const ref = fields[index];
     if (ref) box.insertBefore(f, ref); else box.append(f);
     fields.splice(index, 0, f);
-    requestAnimationFrame(() => { f.focus(); f.position = where === 'start' ? 0 : f.lastOffset; alignSoon(); });
+    // Inzwischen neu gezeichnet (z. B. Block verschoben)? Dann nicht mehr fokussieren – MathLive stürzt sonst ab
+    requestAnimationFrame(() => { if (!f.isConnected) return; f.focus(); f.position = where === 'start' ? 0 : f.lastOffset; alignSoon(); });
     return f;
   };
   const onKey = (e, mf) => {
