@@ -164,7 +164,7 @@ async function mathFields(ed, b, atom, view) {
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
       const pos = mf.position, end = mf.lastOffset;
       let tail = '';
-      if (pos < end && mf.getOffsetDepth(pos) === 0) {
+      if (pos < end && offsetDepth(mf, pos) === 0) {
         tail = cleanFieldLatex(mf.getValue(pos, end));
         mf.value = cleanFieldLatex(mf.getValue(0, pos));
       }
@@ -245,6 +245,16 @@ async function mathFields(ed, b, atom, view) {
 }
 
 function fieldValue(mf) { return cleanFieldLatex(mf.getValue('latex')); }
+
+// Wie tief steckt die Einfügemarke (0 = direkt in der Zeile, sonst in Bruch,
+// Wurzel …)? Diese MathLive-Version hat dafür keine eigene Funktion mehr.
+function offsetDepth(mf, pos) {
+  try {
+    let atom = mf._mathfield.model.at(pos), d = 0;
+    while (atom && atom.parent && atom.parent.type !== 'root') { d++; atom = atom.parent; }
+    return d;
+  } catch { return 1; }
+}
 
 // Ausrichtungspunkte gleicher ID in allen Zeilen auf dieselbe Höhe schieben
 function alignFields(box, fields) {

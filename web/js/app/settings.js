@@ -310,8 +310,10 @@ function ipadPage(app, save) {
       h('h3', { text: 'Abgleich mit dem Mac' }),
       h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund).' }),
       h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change)),
-      h('h3', { text: 'Apple Pencil' }),
-      row('Schreibfeld unter Formeln', 'Geöffnete Formeln, Reaktionsgleichungen, Graphen und Strukturformeln bekommen ein Feld, in das du mit dem Pencil schreibst. Nach einer kurzen Pause landet das Geschriebene im Block – Kürzel wie „wurzel“ oder „bruch“ funktionieren wie getippt.',
+      h('h3', { text: 'Eingabe' }),
+      row('Mathe-Tastatur', 'Beim Tippen in eine Formel (auch in Graphen) erscheint statt der normalen Bildschirmtastatur eine eigene Tastatur mit Bruch, Wurzel, Hochzahl, Funktionen, Integralen, griechischen Buchstaben und Einheiten. Mit ⌄ lässt sie sich einklappen, etwa wenn eine Hardware-Tastatur angeschlossen ist.',
+        sw(s.mathKeyboard !== false, (v) => save({ mathKeyboard: v }))),
+      row('Pencil-Schreibfeld', 'Reaktionsgleichungen und Strukturformeln bekommen ein Feld, in das du mit dem Apple Pencil schreibst. Nach einer kurzen Pause landet das Geschriebene im Block.',
         sw(s.pencilPad !== false, (v) => save({ pencilPad: v })))
     ];
   }

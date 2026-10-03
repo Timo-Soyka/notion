@@ -9,6 +9,7 @@
 import { markColor, markName, cleanFieldLatex } from '../core/mathlines.js';
 import { menu, promptDialog } from '../ui/ui.js';
 import { isPad } from '../bridge.js';
+import { mathKeyboardEnabled } from './mathkeyboard.js';
 
 let loading = null;
 
@@ -202,9 +203,9 @@ export async function createField(opts = {}) {
     };
     mf.inlineShortcuts = { ...shortcuts(mf.inlineShortcuts), ...(opts.shortcuts || {}) };
     mf.value = opts.value || '';
-    // iPad: normale Bildschirmtastatur statt keiner (MathLive schaltet sie ab)
+    // iPad: Mathe-Tastatur von Heft – oder (abgeschaltet) die normale Bildschirmtastatur
     const sink = isPad && mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink');
-    if (sink) sink.setAttribute('inputmode', 'text');
+    if (sink) sink.setAttribute('inputmode', mathKeyboardEnabled() ? 'none' : 'text');
     opts.onMount && opts.onMount(mf);
   }, { once: true });
 

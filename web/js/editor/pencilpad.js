@@ -35,7 +35,8 @@ export function watchPencil() {
 export const pencilKnown = () => known || window.HeftPencil === true;
 
 // Blöcke mit Schreibfeld; der Block selbst legt beim Öffnen `atom._hw(text, opts)` an
-export const PENCIL_TYPES = new Set(['math', 'chem', 'plot', 'smiles']);
+// (Formeln und Graphen haben dafür die Mathe-Tastatur)
+export const PENCIL_TYPES = new Set(['chem', 'smiles']);
 
 const HINT = {
   math: 'Mit dem Pencil hier schreiben – z. B.  x² + wurzel 9 = 1/2',

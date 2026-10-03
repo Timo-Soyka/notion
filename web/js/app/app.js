@@ -2,6 +2,7 @@
 // Mac-App. Hier wird auch gespeichert (verzögert, sobald man kurz aufhört
 // zu tippen) und beim Wechseln des Eintrags sofort.
 
+import { setMathKeyboard } from '../editor/mathkeyboard.js';
 import { h, esc, menu, toast, confirmDialog, promptDialog, initTooltips, debounce, formatDate, relativeTime, todayISO, mod } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { call, on, isNative, isPad, uuidFromLink, itemLink, touchAsset } from '../bridge.js';
@@ -56,6 +57,7 @@ export class App {
 
   async boot() {
     try { this.settings = withDefaults(await call('settings.get')); } catch { this.settings = withDefaults({}); }
+    setMathKeyboard(this.settings.mathKeyboard);
     this.applyTheme();
     this.sidebar.el.style.display = 'none';
     this.renderTopbar();
@@ -101,6 +103,7 @@ export class App {
 
   async updateSettings(patch) {
     this.settings = withDefaults({ ...this.settings, ...patch });
+    setMathKeyboard(this.settings.mathKeyboard);
     try { await call('settings.set', { settings: patch }); } catch (e) { toast('Einstellungen nicht gespeichert: ' + e.message, { type: 'error' }); }
     return this.settings;
   }

@@ -438,3 +438,45 @@ html.ipad .atom-view, html.ipad .math-view, html.ipad .img-frame, html.ipad .blk
 .pencil-pad .btn { flex: none; }
 .pencil-input { flex: 1; min-width: 0; min-height: 56px; resize: none; border: 0; outline: none; background: transparent; font: 22px var(--font-ui); line-height: 1.4; color: var(--fg); padding: 12px 4px; }
 .pencil-input::placeholder { font-size: 16px; color: var(--muted); }
+
+/* ---------------------------------------------------------------------------
+   Mathe-Tastatur (iPad)
+   --------------------------------------------------------------------------- */
+.math-kbd {
+  --mk-bg: #d1d4db; --mk-key: #ffffff; --mk-mod: #adb3bd; --mk-fg: #111; --mk-op: #e8edf7;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 2500; display: none;
+  background: var(--mk-bg); padding: 6px 8px calc(10px + env(safe-area-inset-bottom)); box-sizing: border-box;
+  font-family: var(--font-ui); color: var(--mk-fg); box-shadow: 0 -1px 0 rgba(0,0,0,.12);
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
+}
+:root[data-theme="dark"] .math-kbd { --mk-bg: #2b2b2e; --mk-key: #5a5a5e; --mk-mod: #3c3c40; --mk-fg: #f2f2f2; --mk-op: #4a4f5c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .math-kbd { --mk-bg: #2b2b2e; --mk-key: #5a5a5e; --mk-mod: #3c3c40; --mk-fg: #f2f2f2; --mk-op: #4a4f5c; } }
+.math-kbd.open { display: block; }
+.mk-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.mk-top .grow { flex: 1; }
+.mk-tab, .mk-tool { border: 0; border-radius: 8px; padding: 7px 14px; font: 15px var(--font-ui); background: transparent; color: var(--mk-fg); }
+.mk-tab.on { background: var(--mk-key); font-weight: 600; box-shadow: 0 1px 0 rgba(0,0,0,.25); }
+.mk-tool.done { background: var(--accent); color: #fff; font-weight: 600; }
+.mk-body { display: flex; gap: 8px; }
+.mk-grid { flex: 1; display: grid; grid-template-rows: repeat(4, 1fr); gap: 6px; }
+.mk-row { display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; }
+.mk-tool .icon { width: 20px; height: 20px; }
+.mk-side { width: 14%; min-width: 110px; display: grid; grid-template-rows: repeat(4, 1fr); grid-template-columns: 1fr 1fr; gap: 6px; }
+.mk-side .mk-key:nth-child(1), .mk-side .mk-key:nth-child(4), .mk-side .mk-key:nth-child(5) { grid-column: span 2; }
+.mk-key {
+  border: 0; border-radius: 8px; min-height: 50px; padding: 0 4px; background: var(--mk-key); color: var(--mk-fg);
+  font: 19px var(--font-ui); box-shadow: 0 1px 0 rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.mk-key .katex { font-size: 1.05em; }
+.mk-key.num { font-size: 22px; }
+.mk-key.op { background: var(--mk-op); font-size: 22px; }
+.mk-key.mod { background: var(--mk-mod); font-size: 15px; }
+.mk-key.enter { background: var(--accent); color: #fff; font-size: 15px; }
+.mk-key.down { filter: brightness(.85); transform: translateY(1px); }
+.math-kbd-show {
+  position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 2500; display: none;
+  border: 0; border-radius: 22px; padding: 10px 16px; background: var(--accent); color: #fff; font: 600 15px var(--font-ui); box-shadow: var(--shadow-pop);
+}
+.math-kbd-show.open { display: block; }
+/* Platz unter dem Eintrag, damit die Formel über der Tastatur bleibt */
+body.mathkbd-open .view { padding-bottom: calc(var(--mk-h, 300px) + 40px); }

@@ -65,6 +65,8 @@ export function popover(anchor, content, opts = {}) {
   let closed = false;
   const onDown = (e) => {
     if (el.contains(e.target)) return;
+    // Mathe-Tastatur (iPad) gehört zum Formelfeld im Popover
+    if (e.target.closest && e.target.closest('.math-kbd, .math-kbd-show')) return;
     if (opts.keepOn && opts.keepOn.some(k => k && k.contains && k.contains(e.target))) return;
     api.close();
   };
