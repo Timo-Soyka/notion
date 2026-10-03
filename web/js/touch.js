@@ -7,7 +7,8 @@
 //   • Lange drücken öffnet das Kontextmenü (Seitenleiste, Spaltengriffe …).
 //   • Doppeltippen auf Griffe wirkt wie Doppelklick.
 
-const DRAG = '.blk-handle .grip, .sidebar-resizer, .tcol-resize, .col-resize, .plot-resize, .img-handle, .blk.editing .plot-svg';
+// (Der Block-Griff ⋮⋮ hat in editor/dnd.js eine eigene Behandlung für Finger und Pencil)
+const DRAG = '.sidebar-resizer, .tcol-resize, .col-resize, .plot-resize, .img-handle, .blk.editing .plot-svg';
 const CONTEXT = '.tree-row, .tcol-resize, .col-resize, .blk-text .am';
 const DOUBLE = '.tcol-resize, .col-resize, .plot-resize, .img-handle, .imged-stage canvas';
 const LONG_PRESS_MS = 480;

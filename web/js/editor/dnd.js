@@ -1,7 +1,7 @@
 // Griff links neben den Blöcken (+ und ⋮⋮), Verschieben per Ziehen,
 // Rahmen-Auswahl mit der Maus und Dateien aus dem Finder hineinziehen.
 
-import { h } from '../ui/ui.js';
+import { h, closeAllPopovers } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { block, isEmptyHTML } from '../core/markdown.js';
 import { segsToText, htmlToSegs } from '../core/inline.js';
@@ -63,10 +63,10 @@ export function attachDnd(ed) {
 
   const mainOf = (b) => { const el = ed.elOf(b); return el && el.querySelector(':scope > .blk-main'); };
 
-  const place = (b) => {
+  // Wo der Griff eines Blocks stünde (Bildschirmkoordinaten, auf Höhe der ersten Zeile)
+  const handlePos = (b) => {
     const main = mainOf(b);
-    if (!main) { handle.classList.remove('show'); return; }
-    const dr = d.getBoundingClientRect();
+    if (!main) return null;
     const mr = main.getBoundingClientRect();
     const t = main.querySelector('.blk-text');
     let lineH = 24;
@@ -74,10 +74,37 @@ export function attachDnd(ed) {
     const topPad = t ? parseFloat(getComputedStyle(t).paddingTop) || 0 : 0;
     const offsetY = t ? topPad + (lineH - 24) / 2 : 4;
     const box = handleBox(b, mr);
-    plus.style.visibility = box.gripOnly ? 'hidden' : '';
-    handle.style.left = (box.left - dr.left) + 'px';
-    handle.style.top = (mr.top - dr.top + Math.max(0, offsetY)) + 'px';
+    return { left: box.left, top: mr.top + Math.max(0, offsetY), gripOnly: box.gripOnly, mr };
+  };
+
+  const place = (b) => {
+    const p = handlePos(b);
+    if (!p) { handle.classList.remove('show'); return; }
+    const dr = d.getBoundingClientRect();
+    plus.style.visibility = p.gripOnly ? 'hidden' : '';
+    handle.style.left = (p.left - dr.left) + 'px';
+    handle.style.top = (p.top - dr.top) + 'px';
     handle.classList.add('show');
+  };
+
+  // iPad: Wo man den Griff ⋮⋮ mit Finger oder Pencil anfassen kann – großzügiger
+  // als der kleine Knopf und auch, solange er gerade bei keinem oder einem
+  // anderen Block steht. Bei mehreren Kandidaten gewinnt der nächstgelegene.
+  const GRIP_X = 22, GRIP_W = 18, GRIP_H = 24;
+  const gripZoneAt = (x, y) => {
+    let best = null, bestDist = Infinity;
+    for (const b of ed.flat()) {
+      const main = mainOf(b);
+      if (!main) continue;
+      const mr = main.getBoundingClientRect();
+      if (!mr.height || x > mr.left || x < mr.left - 80 || y < mr.top - 16 || y > mr.top + 64) continue;
+      const p = handlePos(b);
+      const gl = p.left + GRIP_X;
+      if (x < gl - 8 || x > Math.min(gl + GRIP_W + 12, mr.left - 1) || y < p.top - 12 || y > p.top + GRIP_H + 12) continue;
+      const dist = Math.hypot(x - (gl + GRIP_W / 2), y - (p.top + GRIP_H / 2));
+      if (dist < bestDist) { bestDist = dist; best = b; }
+    }
+    return best;
   };
 
   // Zu welchem Block gehört der Griff an dieser Stelle? Zuerst die Griffzone
@@ -144,21 +171,27 @@ export function attachDnd(ed) {
 
   // ⋮⋮: Klick = Menü, Ziehen = Verschieben
   let dragging = false;
-  grip.addEventListener('mousedown', (e) => {
-    if (e.button !== 0 || !hoverBlock) return;
-    e.preventDefault();
-    const b = hoverBlock;
-    const sx = e.clientX, sy = e.clientY;
+  // touch: { id, menu } beim Ziehen mit Finger oder Pencil (Pointer-Ereignisse statt Maus)
+  const startDrag = (b, sx, sy, touch = null) => {
     let started = false;
     let ghost = null, indicator = null, drop = null;
     const blocks = ed.selected.has(b.id) ? ed.selectedBlocks() : [b];
     const scroller = ed.root.closest('.view') || document.scrollingElement;
     let scrollTimer = null;
+    const mine = (ev) => !touch || ev.pointerId === touch.id;
     const move = (ev) => {
+      if (!mine(ev)) return;
+      if (touch) ev.preventDefault();
       if (!started) {
-        if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 4) return;
+        if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < (touch ? 6 : 4)) return;
         started = true;
         dragging = true;
+        if (touch) {
+          // Offene Formel und Tastatur schließen – sie verdecken sonst das Ziel
+          if (ed.activeAtom) ed.deactivate();
+          const a = document.activeElement;
+          if (a && a !== document.body && a.blur) a.blur();
+        }
         ed.syncAll();
         ed.selectBlocks(blocks);
         window.getSelection().removeAllRanges();
@@ -168,29 +201,83 @@ export function attachDnd(ed) {
         d.append(indicator);
         handle.classList.remove('show');
       }
-      ghost.style.left = ev.clientX + 12 + 'px';
-      ghost.style.top = ev.clientY + 8 + 'px';
+      // Mit dem Finger: Vorschau über der Fingerspitze, sonst sieht man sie nicht
+      ghost.style.left = ev.clientX + (touch ? 20 : 12) + 'px';
+      ghost.style.top = ev.clientY + (touch ? -52 : 8) + 'px';
       drop = computeDrop(ed, ev, blocks, blockAt);
       showIndicator(ed, indicator, drop);
       // Automatisch scrollen am Rand
       clearInterval(scrollTimer);
       const sr = scroller.getBoundingClientRect ? scroller.getBoundingClientRect() : { top: 0, bottom: innerHeight };
-      const edge = ev.clientY < sr.top + 50 ? -1 : ev.clientY > sr.bottom - 50 ? 1 : 0;
+      const zone = touch ? 70 : 50;
+      const edge = ev.clientY < sr.top + zone ? -1 : ev.clientY > sr.bottom - zone ? 1 : 0;
       if (edge) scrollTimer = setInterval(() => { scroller.scrollTop += edge * 14; }, 16);
     };
-    const up = () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
+    const finish = (ev, cancelled) => {
+      if (!mine(ev)) return;
+      if (touch) {
+        window.removeEventListener('pointermove', move, true);
+        window.removeEventListener('pointerup', up, true);
+        window.removeEventListener('pointercancel', cancel, true);
+        touchGrab = false;
+      } else {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+      }
       clearInterval(scrollTimer);
-      if (!started) { ed.openBlockMenu(b, grip); return; }
+      if (!started) {
+        // Antippen: Menü – mit dem Finger nur, wenn der Griff schon zu sehen war
+        if (!cancelled && (!touch || touch.menu)) ed.openBlockMenu(b, grip);
+        return;
+      }
       dragging = false;
       ghost && ghost.remove();
       indicator && indicator.remove();
-      if (drop) ed.moveBlocks(blocks, drop.target, drop.pos);
+      if (drop && !cancelled) ed.moveBlocks(blocks, drop.target, drop.pos);
+      // Griff gleich wieder am verschobenen Block – zum Weiterschieben
+      if (touch) requestAnimationFrame(() => { if (ed.byId.has(b.id)) { hoverBlock = b; place(b); } });
     };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    const up = (ev) => finish(ev, false);
+    const cancel = (ev) => finish(ev, true);
+    if (touch) {
+      window.addEventListener('pointermove', move, { capture: true, passive: false });
+      window.addEventListener('pointerup', up, true);
+      window.addEventListener('pointercancel', cancel, true);
+    } else {
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    }
+  };
+  grip.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || !hoverBlock) return;
+    e.preventDefault();
+    startDrag(hoverBlock, e.clientX, e.clientY);
   });
+
+  // iPad: Griff mit Finger oder Pencil anfassen und ziehen – ohne vorher den
+  // Block antippen zu müssen
+  let touchGrab = false;
+  d.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' || !e.isPrimary || ed.readonly || dragging) return;
+    const t = e.target;
+    if (t.closest && t.closest('.col-resize, .tcol-resize, .plot-resize, .img-handle, .popover')) return;
+    // Der sichtbare +-Knopf bleibt ein Knopf
+    if (t.closest && t.closest('.blk-handle button:not(.grip)') && handle.classList.contains('show')) return;
+    const onGrip = !!(t.closest && t.closest('.blk-handle .grip')) && handle.classList.contains('show') && hoverBlock;
+    const b = onGrip ? hoverBlock : gripZoneAt(e.clientX, e.clientY);
+    if (!b) return;
+    // Keine nachgemachten Mausklicks, nichts darunter reagiert – offene Menüs schließen deshalb hier
+    e.preventDefault();
+    e.stopPropagation();
+    closeAllPopovers();
+    const shown = handle.classList.contains('show') && hoverBlock === b;
+    hoverBlock = b;
+    place(b);
+    touchGrab = true;
+    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown });
+  }, true);
+  // Solange der Griff gehalten wird: kein Scrollen, keine Handschrift-Erkennung
+  d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });
 
   // Rahmen-Auswahl vom Rand aus und Text-Ziehen über Blockgrenzen
   d.addEventListener('mousedown', (e) => {
