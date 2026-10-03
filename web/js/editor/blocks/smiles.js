@@ -11,7 +11,7 @@ import { icon } from '../../ui/icons.js';
 import { captionEl, mediaBar } from './atoms.js';
 import {
   parseSmiles, elementCounts, hillFormula, molarMass, functionalGroups, substanceClass,
-  explicitHSmiles, condensedFormula, gridLayout, nameToSmiles, isAcyclic
+  explicitHSmiles, condensedFormula, gridLayout, nameToSmiles, isAcyclic, kekulize
 } from '../../core/chem.js';
 import { renderToString } from '../render/katex.js';
 
@@ -96,6 +96,86 @@ export async function drawSmiles(smiles, svg, { scale = 1, dark = false, explici
   return drawer;
 }
 
+// Valenzstrichformel für Ringe (und alles, was nicht als gerade Kette passt).
+// SmilesDrawer legt nur die Lage der Nicht-H-Atome fest – wie bei der
+// Skelettformel. H-Atome, Bindungsstriche und Elektronenpaare setzt Heft
+// selbst in die freien Lücken (vorher zeichnete SmilesDrawer alles mit H, und
+// bei Zuckern lagen H, O und Striche übereinander).
+export async function ringLayout(smiles) {
+  const SD = await smilesDrawer();
+  // Räumliche Angaben (@, @@) weglassen: sonst legt SmilesDrawer eigene H-Atome
+  // an, und die Valenzstrichformel zeigt sie ohnehin nicht
+  const clean = String(smiles).replace(/@+/g, '');
+  // Aromaten (Benzol …) mit abwechselnden Doppelbindungen, wie im Heft
+  const base = kekulize(parseSmiles(clean));
+  const drawer = new SD.SvgDrawer({ explicitHydrogens: false, compactDrawing: false });
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  await new Promise((resolve, reject) => {
+    SD.parse(clean, (tree) => { try { drawer.draw(tree, svg, 'light', null); resolve(true); } catch (e) { reject(e); } }, reject);
+  });
+  const g = drawer.preprocessor && drawer.preprocessor.graph;
+  if (!g || g.vertices.length !== base.atoms.length) return null;
+  // Länge einer Bindung → 2,6 Rastereinheiten (etwas mehr als in der geraden
+  // Kette, damit die H-Atome benachbarter Ringatome nicht aneinanderstoßen)
+  const lens = g.edges.map(e => { const a = g.vertices[e.sourceId].position, b = g.vertices[e.targetId].position; return Math.hypot(a.x - b.x, a.y - b.y); }).filter(Boolean);
+  const f = lens.length ? 2.6 / (lens.reduce((x, y) => x + y, 0) / lens.length) : 1;
+  const atoms = g.vertices.map((v, i) => ({ el: base.atoms[i].el, charge: base.atoms[i].charge || 0, x: v.position.x * f, y: v.position.y * f }));
+  const order = { '-': 1, '=': 2, '#': 3 };
+  const kek = new Map(base.bonds.map(bd => [Math.min(bd.a, bd.b) + '-' + Math.max(bd.a, bd.b), bd.order]));
+  const bonds = g.edges.map(e => {
+    const o = kek.get(Math.min(e.sourceId, e.targetId) + '-' + Math.max(e.sourceId, e.targetId));
+    return { a: e.sourceId, b: e.targetId, order: o === 2 || o === 3 ? o : order[e.bondType] === 3 ? 3 : o === 1 ? 1 : (order[e.bondType] || 1) };
+  });
+  // Ringmitten – H-Atome und Elektronenpaare gehören nie ins Ringinnere
+  const rings = (drawer.preprocessor.rings || []).map(r => {
+    const m = r.members || [];
+    return { members: new Set(m), x: m.reduce((a, i) => a + atoms[i].x, 0) / (m.length || 1), y: m.reduce((a, i) => a + atoms[i].y, 0) / (m.length || 1) };
+  });
+  const towardRing = (i, ang) => rings.some(r => r.members.has(i) && Math.cos(Math.atan2(r.y - atoms[i].y, r.x - atoms[i].x) - ang) > 0.5);
+  const dirs = atoms.map(() => []);
+  for (const bd of bonds) {
+    const A = atoms[bd.a], B = atoms[bd.b];
+    dirs[bd.a].push(Math.atan2(B.y - A.y, B.x - A.x));
+    dirs[bd.b].push(Math.atan2(A.y - B.y, A.x - B.x));
+  }
+  // n Dinge (H-Atome, Elektronenpaare) gleichmäßig in die größte freie Lücke
+  // um Atom i verteilen – bei Ringatomen also nach außen, nie in den Ring
+  const spread = (i, n) => {
+    const used = dirs[i].slice().sort((a, b) => a - b);
+    if (!used.length) return Array.from({ length: n }, (_, k) => -Math.PI / 2 + (k * 2 * Math.PI) / n);
+    // Fast gleich große Lücken: die mit dem meisten Platz drumherum (nicht in den Ring)
+    let best = 0, size = -1, bestScore = -Infinity;
+    for (let k = 0; k < used.length; k++) {
+      const from = used[k], to = k + 1 < used.length ? used[k + 1] : used[0] + 2 * Math.PI;
+      const mid = (from + to) / 2;
+      const x = atoms[i].x + Math.cos(mid) * 1.5, y = atoms[i].y + Math.sin(mid) * 1.5;
+      let near = Infinity;
+      for (let j = 0; j < atoms.length; j++) if (j !== i) near = Math.min(near, Math.hypot(atoms[j].x - x, atoms[j].y - y));
+      const score = (to - from) + 0.8 * Math.min(near, 2.5) - (towardRing(i, mid) ? 10 : 0);
+      if (score > bestScore) { bestScore = score; size = to - from; best = from; }
+    }
+    return Array.from({ length: n }, (_, k) => best + (size * (k + 1)) / (n + 1));
+  };
+  const heavy = atoms.length;
+  for (let i = 0; i < heavy; i++) {
+    const n = base.atoms[i].hCount || 0;
+    for (const a of spread(i, n)) {
+      dirs[i].push(a);
+      atoms.push({ el: 'H', charge: 0, x: atoms[i].x + Math.cos(a) * 1.5, y: atoms[i].y + Math.sin(a) * 1.5 });
+      bonds.push({ a: i, b: atoms.length - 1, order: 1 });
+    }
+  }
+  const lonePairs = [];
+  for (let i = 0; i < heavy; i++) {
+    const at = atoms[i];
+    let lp = LONE_PAIR_COUNT[at.el] || 0;
+    if (at.el === 'N' && at.charge > 0) lp = 0;
+    if (at.el === 'O') lp = 2 + (at.charge < 0 ? 1 : 0) - (at.charge > 0 ? 1 : 0);
+    for (const a of spread(i, lp)) lonePairs.push({ atom: i, angle: a });
+  }
+  return { atoms, bonds, lonePairs };
+}
+
 // Freie Elektronenpaare als Striche neben die Atome (Positionen aus SmilesDrawer)
 function addLonePairs(drawer, svg, dark) {
   const g = drawer.preprocessor && drawer.preprocessor.graph;
@@ -155,7 +235,12 @@ export function drawGridSVG(layout, { unit = 17, dark = false } = {}) {
   const fg = dark ? '#e6e6e6' : '#1d1d1f';
   const color = (el) => ELEMENT_COLORS[el] || fg;
   const mk = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
-  const gap = 8;
+  // Alles wächst mit der Größe (S/M/L) – vorher waren Abstand, Schrift und
+  // Elektronenpaare fest, bei „S“ blieben von den Bindungen nur Stummel übrig
+  const k = unit / 17;
+  const font = 14.5 * k;
+  const gap = font * 0.45;
+  const stroke = Math.max(1, 1.3 * k);
   for (const b of layout.bonds) {
     const A = layout.atoms[b.a], B = layout.atoms[b.b];
     let x1 = X(A.x), y1 = Y(A.y), x2 = X(B.x), y2 = Y(B.y);
@@ -163,23 +248,25 @@ export function drawGridSVG(layout, { unit = 17, dark = false } = {}) {
     const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
     x1 += ux * gap; y1 += uy * gap; x2 -= ux * gap; y2 -= uy * gap;
     const nx = -uy, ny = ux;
-    const offs = b.order === 2 ? [-2.2, 2.2] : b.order === 3 ? [-3.4, 0, 3.4] : [0];
-    for (const o of offs) svg.append(mk('line', { x1: x1 + nx * o, y1: y1 + ny * o, x2: x2 + nx * o, y2: y2 + ny * o, stroke: fg, 'stroke-width': 1.3, 'stroke-linecap': 'round' }));
+    const o2 = Math.max(1.8, 2.2 * k), o3 = Math.max(2.8, 3.4 * k);
+    const offs = b.order === 2 ? [-o2, o2] : b.order === 3 ? [-o3, 0, o3] : [0];
+    for (const o of offs) svg.append(mk('line', { x1: x1 + nx * o, y1: y1 + ny * o, x2: x2 + nx * o, y2: y2 + ny * o, stroke: fg, 'stroke-width': stroke, 'stroke-linecap': 'round' }));
   }
   for (const lp of layout.lonePairs) {
     const a = layout.atoms[lp.atom];
     const cx = X(a.x), cy = Y(a.y);
-    const d = { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[lp.dir];
-    const px = cx + d[0] * 9.5, py = cy + d[1] * 10.5;
-    const tx = d[1] ? 4 : 0, ty = d[0] ? 4 : 0;
-    svg.append(mk('line', { x1: px - tx, y1: py - ty, x2: px + tx, y2: py + ty, stroke: fg, 'stroke-width': 1.3, 'stroke-linecap': 'round' }));
+    const d = lp.angle !== undefined ? [Math.cos(lp.angle), Math.sin(lp.angle)] : { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] }[lp.dir];
+    const px = cx + d[0] * 9.5 * k, py = cy + d[1] * 10.5 * k;
+    // Strich quer zur Richtung des Elektronenpaars
+    const tx = -d[1] * 4 * k, ty = d[0] * 4 * k;
+    svg.append(mk('line', { x1: px - tx, y1: py - ty, x2: px + tx, y2: py + ty, stroke: fg, 'stroke-width': stroke, 'stroke-linecap': 'round' }));
   }
   for (const a of layout.atoms) {
-    const t = mk('text', { x: X(a.x), y: Y(a.y) + 5, 'text-anchor': 'middle', 'font-size': 14.5, 'font-family': '-apple-system, "Helvetica Neue", Arial, sans-serif', fill: color(a.el) });
+    const t = mk('text', { x: X(a.x), y: Y(a.y) + font * 0.345, 'text-anchor': 'middle', 'font-size': font.toFixed(1), 'font-family': '-apple-system, "Helvetica Neue", Arial, sans-serif', fill: color(a.el) });
     t.textContent = a.el;
     svg.append(t);
     if (a.charge) {
-      const c = mk('text', { x: X(a.x) + 9, y: Y(a.y) - 5, 'font-size': 10, fill: fg });
+      const c = mk('text', { x: X(a.x) + 9 * k, y: Y(a.y) - 5 * k, 'font-size': (10 * k).toFixed(1), fill: fg });
       c.textContent = (Math.abs(a.charge) > 1 ? Math.abs(a.charge) : '') + (a.charge > 0 ? '+' : '−');
       svg.append(c);
     }
@@ -267,6 +354,16 @@ export const smiles = {
     });
     name.addEventListener('input', () => { clearTimeout(b._nameT); b._nameT = setTimeout(tryLocal, 250); });
     searchBtn.addEventListener('click', doLookup);
+    // Schreibfeld für den Pencil: geschriebener Name (oder SMILES) wie eingetippt
+    atom._hw = (text) => {
+      if (/^[A-Za-z0-9@+\-\[\]\(\)=#\/\\%.]+$/.test(text) && !/[a-z]{3}/.test(text)) {
+        sm.value = text;
+        sm.dispatchEvent(new Event('input'));
+        return;
+      }
+      name.value = text;
+      doLookup();
+    };
     sm.addEventListener('input', () => { b.smiles = sm.value.trim(); b._repaint(); ed.changed({ soft: true }); });
     sm.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); ed.exitAtom(b, 'after'); }
@@ -319,7 +416,7 @@ async function paint(ed, b, wrap) {
       } else note = 'Halbstrukturformel gibt es nur für Moleküle ohne Ring – hier die Skelettformel.';
     }
     if (!drawn && mode === 'valenz') {
-      const L = gridLayout(b.smiles);
+      const L = gridLayout(b.smiles) || await ringLayout(b.smiles).catch(() => null);
       if (L) {
         const svg = drawGridSVG(L, { dark, unit: 17 * factor });
         wrap.append(svg);

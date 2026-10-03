@@ -212,13 +212,9 @@ export async function createField(opts = {}) {
   // Taste für Taste – dann greifen die Kürzel nicht ("wurzel" bliebe Text).
   // Deshalb Zeichen für Zeichen eingeben und Kürzel selbst auflösen.
   if (isPad) {
-    let pointerAt = 0;
     let written = null;
     let buffer = null;
     const sinkEl = () => mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink');
-    mf.addEventListener('pointerdown', () => { pointerAt = Date.now(); }, true);
-    // Mit dem Stift in ein Feld geschrieben, das noch nicht aktiv war: hinten anfügen
-    mf.addEventListener('focus', () => { if (Date.now() - pointerAt > 400) mf.position = mf.lastOffset; });
     // Gesammelte Handschrift in die Formel übernehmen
     const flush = () => {
       if (!buffer) return;
@@ -509,6 +505,13 @@ function insertWritten(mf, text, inside = false) {
     i += 1;
   }
   return nested;
+}
+
+// Text aus dem Schreibfeld in ein Formelfeld übernehmen (√ und Kürzel aufgelöst)
+export function writeInto(mf, text) {
+  const t = text.replace(/√/g, 'wurzel').replace(/[→⇒]/g, '\\Rightarrow ');
+  insertWritten(mf, t, false);
+  mf.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
 }
 
 export function value(mf) {

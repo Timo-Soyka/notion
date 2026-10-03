@@ -13,7 +13,7 @@ import {
 } from '../../core/mathexpr.js';
 import { renderToString } from '../render/katex.js';
 import { captionEl, mediaBar } from './atoms.js';
-import { createField } from '../mathfield.js';
+import { createField, writeInto } from '../mathfield.js';
 import { latexToExpr, exprToLatex } from '../../core/plotlatex.js';
 import { toPx, formatWidth, parseWidth, CM_PX } from '../../core/widths.js';
 
@@ -1027,8 +1027,24 @@ function buildPanel(ed, b, panel) {
   const addRow = (tex, at = Math.min(focusIdx + 1, c.functions.length)) => {
     c.functions.splice(at, 0, { tex, expr: latexToExpr(tex) });
     pending = { index: at };
-    renderRows();
+    const done = renderRows();
     repaint();
+    return done;
+  };
+  // Schreibfeld für den Pencil: in die gewählte Zeile, wenn sie leer ist – sonst neue Funktion
+  panel.parentElement._hw = async (text, { newLine } = {}) => {
+    let i = focusIdx;
+    const cur = fields[i];
+    if (newLine || !cur || cur.getValue('latex').trim()) {
+      i = c.functions.length;
+      await addRow('', i);
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    const mf = fields[i];
+    if (!mf || !text) return;
+    if (!/\\placeholder/.test(mf.getValue('latex'))) mf.position = mf.lastOffset;
+    writeInto(mf, text);
+    focusIdx = i;
   };
   renderRows();
 

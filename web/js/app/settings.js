@@ -309,7 +309,10 @@ function ipadPage(app, save) {
     return [
       h('h3', { text: 'Abgleich mit dem Mac' }),
       h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund).' }),
-      h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change))
+      h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change)),
+      h('h3', { text: 'Apple Pencil' }),
+      row('Schreibfeld unter Formeln', 'Geöffnete Formeln, Reaktionsgleichungen, Graphen und Strukturformeln bekommen ein Feld, in das du mit dem Pencil schreibst. Nach einer kurzen Pause landet das Geschriebene im Block – Kürzel wie „wurzel“ oder „bruch“ funktionieren wie getippt.',
+        sw(s.pencilPad !== false, (v) => save({ pencilPad: v })))
     ];
   }
   return [

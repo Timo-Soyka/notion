@@ -9,11 +9,11 @@
 import { h, esc, popover, menu } from '../../ui/ui.js';
 import { icon } from '../../ui/icons.js';
 import { renderDisplay, renderToString } from '../render/katex.js';
-import { createField, GERMAN_SHORTCUTS, ISOTOPE_TEX } from '../mathfield.js';
+import { createField, GERMAN_SHORTCUTS, ISOTOPE_TEX, writeInto } from '../mathfield.js';
 import { widthDialog } from '../widthdialog.js';
 import { flexFor, fromPx, ratioOf, widthKind, formatWidth } from '../../core/widths.js';
 import { latexToLines, linesToLatex, cleanFieldLatex, needsSource, repairLatex, MARK_COLORS } from '../../core/mathlines.js';
-import { assetURL, assetVersion, uuidFromLink, isPad } from '../../bridge.js';
+import { assetURL, assetVersion, uuidFromLink } from '../../bridge.js';
 import { htmlToSegs, segsToHTML, normalizeHTML } from '../../core/inline.js';
 import { balanceEquation, checkEquation } from '../../core/chem.js';
 import { SIZE_PRESETS, snapWidth, roundWidth, widthOf, formatPct, otherWidths, sameContextImages } from '../../core/imagesize.js';
@@ -89,7 +89,6 @@ export const math = {
     const view = h('div', { class: 'atom-view math-view' });
     renderDisplay(view, b.tex, ed.mathMode());
     view.addEventListener('mousedown', (e) => { if (!ed.readonly) { e.preventDefault(); ed.activate(b); } });
-    if (isPad && !ed.readonly) scribbleTarget(ed, b, view);
     main.append(h('div', { class: 'atom' }, view));
   },
   activate(ed, b, main) {
@@ -99,46 +98,6 @@ export const math = {
     else mathFields(ed, b, atom, view);
   }
 };
-
-// iPad: Mit dem Apple Pencil direkt auf eine Formel schreiben, die gerade nicht
-// geöffnet ist. Scribble braucht dafür ein Eingabefeld – die fertige Formel wird
-// deshalb (unsichtbar) eins. Geschriebenes öffnet die Formel und landet am Ende
-// der letzten Zeile.
-function scribbleTarget(ed, b, view) {
-  view.contentEditable = 'true';
-  view.setAttribute('inputmode', 'none');
-  view.setAttribute('autocorrect', 'off');
-  view.setAttribute('autocapitalize', 'off');
-  view.spellcheck = false;
-  view.addEventListener('beforeinput', (e) => {
-    e.preventDefault();
-    if (!e.isTrusted || !e.data || !['insertText', 'insertReplacementText'].includes(e.inputType)) return;
-    writeIntoMath(ed, b, e.data);
-  });
-}
-
-async function writeIntoMath(ed, b, text) {
-  if (b._writing !== undefined) { b._writing += text; return; }
-  b._writing = text;
-  if (ed.activeAtom !== b) ed.activate(b);
-  for (let i = 0; i < 60; i++) {
-    const fields = ed.elOf(b)?.querySelectorAll('math-field.heft-mf');
-    const f = fields && fields[fields.length - 1];
-    const sink = f && f.shadowRoot && f.shadowRoot.querySelector('.ML__keyboard-sink');
-    if (sink && f.isConnected) {
-      const pending = b._writing;
-      delete b._writing;
-      f.focus();
-      f.position = f.lastOffset;
-      sink.focus();
-      // Wie Handschrift direkt im Feld (gesammelt, Kürzel aufgelöst)
-      document.execCommand('insertText', false, pending);
-      return;
-    }
-    await new Promise(r => setTimeout(r, 50));
-  }
-  delete b._writing;
-}
 
 // Formel zum Anklicken: jede Zeile ein Formelfeld, "&" setzt Ausrichtungspunkte
 async function mathFields(ed, b, atom, view) {
@@ -265,6 +224,21 @@ async function mathFields(ed, b, atom, view) {
     else f.insert(tex.replace(/#\?/g, '\\placeholder{}'), { selectionMode: 'placeholder' });
     sync();
   }));
+  // Schreibfeld für den Pencil: in die zuletzt benutzte Zeile (oder eine neue).
+  // Das Formelfeld bekommt dabei keinen Fokus – das Schreibfeld behält ihn.
+  let hwEnd = null;
+  atom._hw = async (text, { newLine } = {}) => {
+    let f = last && last.isConnected ? last : fields[fields.length - 1];
+    if (newLine || !f) { f = await addLine(fields.length, ''); await new Promise(r => requestAnimationFrame(r)); }
+    if (!f || !text) return;
+    // Hinter die Formel – außer ein leeres Kästchen (z. B. aus „wurzel“) wartet noch
+    const waiting = /\\placeholder/.test(f.getValue('latex'));
+    if (f !== last || (!waiting && hwEnd && hwEnd.f === f && hwEnd.pos === f.position)) f.position = f.lastOffset;
+    writeInto(f, text);
+    hwEnd = { f, pos: f.position };
+    last = f;
+    sync();
+  };
   const lines = latexToLines(repairLatex(b.tex));
   for (let k = 0; k < lines.length; k++) await addLine(k, lines[k]);
   if (fields.length) requestAnimationFrame(() => focusLine(fields.length - 1, 'end'));
@@ -335,6 +309,8 @@ function mathSource(ed, b, atom, view) {
       back),
     err);
   atom.append(panel);
+  // Schreibfeld für den Pencil: Text an die Einfügemarke im Quelltext
+  atom._hw = (text) => { insertAtCursor(ta, text); ta.dispatchEvent(new Event('input')); };
   back.addEventListener('click', () => {
     if (needsSource(ta.value)) { err.textContent = 'Diese Formel enthält Befehle (z. B. \\ce), die nur als Quelltext gehen.'; return; }
     delete b._source;
@@ -437,6 +413,13 @@ export const chem = {
       }
     }, true);
     panelKeys(ed, b, ta);
+    // Schreibfeld für den Pencil: an die Einfügemarke der Gleichung
+    atom._hw = (text) => {
+      const t = text.replace(/[→⟶]/g, '->').replace(/[⇌⇄]/g, '<=>');
+      const before = ta.value.slice(0, ta.selectionStart);
+      insertAtCursor(ta, (before && !/\s$/.test(before) ? ' ' : '') + t);
+      ta.dispatchEvent(new Event('input'));
+    };
     requestAnimationFrame(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; });
   }
 };

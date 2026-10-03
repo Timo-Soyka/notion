@@ -28,7 +28,9 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         let ucc = WKUserContentController()
         ucc.addScriptMessageHandler(bridge, contentWorld: .page, name: "heft")
         // Die Oberfläche soll wissen, dass sie auf dem iPad läuft
-        ucc.addUserScript(WKUserScript(source: "window.HeftPlatform = 'ipad'; document.documentElement.classList.add('ipad');",
+        // Ist ein Apple Pencil gekoppelt? („Nur mit Apple Pencil zeichnen“ ist dann meist an)
+        let pencil = UIPencilInteraction.prefersPencilOnlyDrawing ? "true" : "false"
+        ucc.addUserScript(WKUserScript(source: "window.HeftPlatform = 'ipad'; window.HeftPencil = \(pencil); document.documentElement.classList.add('ipad');",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
         #if DEBUG
         // Fehler der Oberfläche sammeln (zum Abfragen über die Testschnittstelle)
@@ -53,7 +55,10 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         view.backgroundColor = .systemBackground
         // Tastatur auch dann zeigen, wenn ein Feld erst kurz nach dem Antippen
         // den Fokus bekommt (Formelfelder entstehen erst nach dem Tippen)
-        webView.addGestureRecognizer(TouchWatcher())
+        let watcher = TouchWatcher()
+        // Erste Berührung mit dem Pencil: der Oberfläche Bescheid geben (Schreibfeld für Formeln)
+        watcher.onPencil = { [weak self] in self?.emit("pencil-seen", [:]) }
+        webView.addGestureRecognizer(watcher)
         let setter = NSSelectorFromString("_setInputDelegate:")
         if webView.responds(to: setter) { webView.perform(setter, with: focusPolicy) }
         webView.load(URLRequest(url: URL(string: "heft://app/index.html")!))
@@ -188,6 +193,8 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
 // Merkt sich das letzte Antippen mit dem Finger – erkennt selbst nie etwas
 final class TouchWatcher: UIGestureRecognizer {
     static var lastFingerTouch = Date.distantPast
+    var onPencil: (() -> Void)?
+    private var pencilSeen = false
 
     override init(target: Any? = nil, action: Selector? = nil) {
         super.init(target: target, action: action)
@@ -198,6 +205,10 @@ final class TouchWatcher: UIGestureRecognizer {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         if touches.contains(where: { $0.type == .direct }) { Self.lastFingerTouch = Date() }
+        if touches.contains(where: { $0.type == .pencil }), !pencilSeen {
+            pencilSeen = true
+            onPencil?()
+        }
         state = .failed
     }
 

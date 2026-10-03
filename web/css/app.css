@@ -428,22 +428,13 @@
 .move-row.here { color: var(--muted); }
 .move-row.on { background: var(--accent); color: #fff; }
 .move-row.on .icon { color: #fff; }
-/* Formelfelder: Das eigentliche Eingabefeld von MathLive ist unsichtbar und
-   null Pixel groß – der Apple Pencil (Scribble) findet dort nichts zum
-   Hineinschreiben. Auf dem iPad liegt es deshalb (durchsichtig) über dem Feld. */
-html.ipad math-field { position: relative; }
-html.ipad math-field::part(keyboard-sink) {
-  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-  clip: auto; clip-path: none; pointer-events: auto; z-index: 1;
-  color: transparent; caret-color: transparent; background: transparent;
-  font-size: 16px; line-height: normal; overflow: hidden; white-space: nowrap;
-}
-/* Während der Apple Pencil schreibt: erkannten Text kurz zeigen, bis er in die Formel übernommen wird */
-html.ipad math-field.writing::part(keyboard-sink) {
-  color: var(--fg); background: var(--bg); width: auto; min-width: 100%; padding: 0 6px;
-  font: 18px var(--font-ui); line-height: 1.8; border-radius: 6px; box-shadow: 0 0 0 1.5px var(--accent);
-}
-/* Fertige Formeln nehmen auf dem iPad Handschrift an – ohne Rahmen oder Einfügemarke */
-html.ipad .math-view[contenteditable] { outline: none; caret-color: transparent; -webkit-touch-callout: none; }
+
+
 /* Kein Markieren und kein iPadOS-Menü über Formeln, Graphen und Bildern */
 html.ipad .atom-view, html.ipad .math-view, html.ipad .img-frame, html.ipad .blk-handle { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* Schreibfeld für den Apple Pencil unter geöffneten Formeln */
+.pencil-pad { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; margin: 10px 0 4px; padding: 6px 10px; border: 1.5px dashed var(--accent); border-radius: 12px; background: var(--accent-soft); font-family: var(--font-ui); }
+.pencil-pad .pencil-ic { color: var(--accent); display: flex; flex: none; }
+.pencil-pad .btn { flex: none; }
+.pencil-input { flex: 1; min-width: 0; min-height: 56px; resize: none; border: 0; outline: none; background: transparent; font: 22px var(--font-ui); line-height: 1.4; color: var(--fg); padding: 12px 4px; }
+.pencil-input::placeholder { font-size: 16px; color: var(--muted); }

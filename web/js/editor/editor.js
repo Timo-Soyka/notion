@@ -6,6 +6,7 @@
 // Speichern bzw. vor strukturellen Änderungen ins Modell zurückgelesen – so
 // bleibt Tippen flüssig, auch in langen Einträgen.
 
+import { attachPencilPad, pencilKnown, PENCIL_TYPES } from './pencilpad.js';
 import * as UI from '../ui/ui.js';
 import { renderOverlay as renderLineNumbers } from './linenumbers.js';
 import { h } from '../ui/ui.js';
@@ -26,7 +27,7 @@ import { FormatBar, openInlineMath, openFootnote, openLinkPopover, linkHover } f
 import { runInputRules } from './rules.js';
 import { attachClipboard } from './clipboard.js';
 import { attachDnd } from './dnd.js';
-import { uuidFromLink, assetURL, assetVersion } from '../bridge.js';
+import { uuidFromLink, assetURL, assetVersion, isPad } from '../bridge.js';
 import { normalizeMathSyntax, markColor, markName } from '../core/mathlines.js';
 import { headingNumbers, listLabel, parseNum } from '../core/numbering.js';
 import { subjectColor, colorDot } from '../core/subjects.js';
@@ -987,8 +988,18 @@ export class Editor {
     this.activeAtom = b;
     const el = this.elOf(b);
     el.classList.add('editing');
-    def.activate(this, b, el.querySelector(':scope > .blk-main'));
+    const main = el.querySelector(':scope > .blk-main');
+    def.activate(this, b, main);
+    this.pencilPad();
     this.format && this.format.hide();
+  }
+
+  // iPad mit Pencil: eigenes Schreibfeld unter Formel, Reaktionsgleichung, Graph und Strukturformel
+  pencilPad() {
+    const b = this.activeAtom;
+    if (!b || !isPad || !pencilKnown() || this.settings.pencilPad === false || !PENCIL_TYPES.has(b.type)) return;
+    const main = this.elOf(b)?.querySelector(':scope > .blk-main');
+    if (main) attachPencilPad(this, b, main);
   }
 
   deactivate({ select = false } = {}) {
@@ -1527,9 +1538,13 @@ export class Editor {
     document.addEventListener('mousedown', outside, true);
     const selKey = (e) => this.onDocumentKey(e);
     document.addEventListener('keydown', selKey);
+    // Pencil erst jetzt erkannt: geöffneter Block bekommt das Schreibfeld nachträglich
+    const pencil = () => this.pencilPad();
+    document.addEventListener('heft-pencil', pencil);
     this._unbind = () => {
       document.removeEventListener('mousedown', outside, true);
       document.removeEventListener('keydown', selKey);
+      document.removeEventListener('heft-pencil', pencil);
     };
     this.endEl.addEventListener('mousedown', (e) => {
       e.preventDefault();
