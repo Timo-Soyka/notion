@@ -9,7 +9,8 @@
 import { h, esc, popover, menu } from '../../ui/ui.js';
 import { icon } from '../../ui/icons.js';
 import { renderDisplay, renderToString } from '../render/katex.js';
-import { createField, GERMAN_SHORTCUTS, ISOTOPE_TEX, writeInto } from '../mathfield.js';
+import { createField, GERMAN_SHORTCUTS, ISOTOPE_TEX, writeInto, caretDepth } from '../mathfield.js';
+import { mathKeyboardPress } from '../mathkeyboard.js';
 import { widthDialog } from '../widthdialog.js';
 import { flexFor, fromPx, ratioOf, widthKind, formatWidth } from '../../core/widths.js';
 import { latexToLines, linesToLatex, cleanFieldLatex, needsSource, repairLatex, MARK_COLORS } from '../../core/mathlines.js';
@@ -135,13 +136,13 @@ async function mathFields(ed, b, atom, view) {
       value,
       onInput: sync,
       onKey: (e, mf) => onKey(e, mf),
-      onMoveOut: (dir, mf) => {
+      onMoveOut: (dir, mf, { stay } = {}) => {
         const i = fields.indexOf(mf);
         if (dir === 'upward' || dir === 'backward') {
-          if (i > 0) focusLine(i - 1, dir === 'backward' ? 'end' : 'end');
-          else ed.exitAtom(b, 'before');
+          if (i > 0) focusLine(i - 1, 'end');
+          else if (!stay) ed.exitAtom(b, 'before');
         } else if (i < fields.length - 1) focusLine(i + 1, 'start');
-        else ed.exitAtom(b, 'after');
+        else if (!stay) ed.exitAtom(b, 'after');
       },
       extraMenu: () => [
         { label: 'Neue Zeile darunter', icon: 'plus', hint: 'Enter', onSelect: () => addLine(fields.length, '') },
@@ -164,7 +165,7 @@ async function mathFields(ed, b, atom, view) {
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
       const pos = mf.position, end = mf.lastOffset;
       let tail = '';
-      if (pos < end && offsetDepth(mf, pos) === 0) {
+      if (pos < end && caretDepth(mf, pos) === 0) {
         tail = cleanFieldLatex(mf.getValue(pos, end));
         mf.value = cleanFieldLatex(mf.getValue(0, pos));
       }
@@ -178,7 +179,8 @@ async function mathFields(ed, b, atom, view) {
       const v = fieldValue(mf);
       if (!v) {
         if (fields.length > 1) { const k = removeLine(mf); focusLine(k - 1, 'end'); }
-        else ed.removeAtomAndFocusPrev(b);
+        // Gedrückt gehaltene Rücktaste der Mathe-Tastatur: nicht gleich den Block löschen
+        else if (!(mathKeyboardPress() || {}).repeated) ed.removeAtomAndFocusPrev(b);
         return true;
       }
       if (i > 0) {
@@ -246,19 +248,15 @@ async function mathFields(ed, b, atom, view) {
 
 function fieldValue(mf) { return cleanFieldLatex(mf.getValue('latex')); }
 
-// Wie tief steckt die Einfügemarke (0 = direkt in der Zeile, sonst in Bruch,
-// Wurzel …)? Diese MathLive-Version hat dafür keine eigene Funktion mehr.
-function offsetDepth(mf, pos) {
-  try {
-    let atom = mf._mathfield.model.at(pos), d = 0;
-    while (atom && atom.parent && atom.parent.type !== 'root') { d++; atom = atom.parent; }
-    return d;
-  } catch { return 1; }
-}
-
 // Ausrichtungspunkte gleicher ID in allen Zeilen auf dieselbe Höhe schieben
 function alignFields(box, fields) {
   if (!box.isConnected) return;
+  // Ohne Ausrichtungspunkte nichts messen – das kostet bei jedem Tastendruck Zeit
+  if (!fields.some(f => f.shadowRoot && f.shadowRoot.querySelector('.ML__rule'))) {
+    for (const f of fields) if (f.style.paddingLeft) f.style.paddingLeft = '';
+    box.classList.remove('aligned');
+    return;
+  }
   const pos = fields.map(f => {
     f.style.paddingLeft = '';
     const map = new Map();

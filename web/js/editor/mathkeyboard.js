@@ -48,7 +48,7 @@ const LAYERS = [
       'qwertzuiop'.split('').map(ch => typ(ch, ch, { c: 'var' })),
       'asdfghjkl'.split('').map(ch => typ(ch, ch, { c: 'var' })),
       [k('⇧', { act: 'shift', c: 'mod' }), ...'yxcvbnm'.split('').map(ch => typ(ch, ch, { c: 'var' })), k('Text', { act: 'text', c: 'mod' })],
-      [k('Leerzeichen', { ins: '\\;', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }')]
+      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }')]
     ]
   },
   {
@@ -82,25 +82,46 @@ export function installMathKeyboard() {
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => { if (!isMF(document.activeElement)) hide(); }, 150);
   }, true);
+  // iPad gedreht: Die Tastatur ist dann höher oder flacher
+  window.addEventListener('resize', () => {
+    if (panel && panel.classList.contains('open')) document.documentElement.style.setProperty('--mk-h', panel.offsetHeight + 'px');
+  });
 }
 
 function sinkOf(mf) { return mf && mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink'); }
 
 // Echte Taste nachmachen (Rücktaste, Pfeile, Tab, Enter) – so greifen auch Heft-Sonderfälle
-function press(mf, key) {
+let pressing = null, lastBack = 0;
+function press(mf, key, repeated) {
   const target = sinkOf(mf) || mf;
-  target.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, composed: true, cancelable: true }));
+  // Schnell hintereinander getippte Rücktaste zählt wie gedrückt gehalten
+  const now = performance.now();
+  if (key === 'Backspace') { repeated = repeated || now - lastBack < 700; lastBack = now; }
+  pressing = { key, repeated };
+  try { target.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, composed: true, cancelable: true })); }
+  finally { pressing = null; }
 }
+
+// Kommt die Taste gerade von der Mathe-Tastatur? ({ key, repeated } oder null)
+// Pfeile und „Kästchen“ verlassen dann den Block nicht, und die gedrückt
+// gehaltene Rücktaste löscht nicht gleich den ganzen Block mit.
+export const mathKeyboardPress = () => pressing;
 
 function changed(mf) { mf.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }
 
-function apply(spec) {
+function apply(spec, repeated = false) {
   const mf = field;
   if (!mf || !mf.isConnected) return;
   if (spec.act === 'shift') { shift = !shift; render(); return; }
-  if (spec.act === 'text') { mf.insert('\\text{\\placeholder{}}', { selectionMode: 'placeholder', format: 'latex' }); changed(mf); return; }
+  // „Text“ schaltet zwischen normalem Text und Formel um
+  if (spec.act === 'text') { mf.executeCommand(['switchMode', mf.mode === 'text' ? 'math' : 'text']); markMode(); return; }
+  if (spec.act === 'space') {
+    if (mf.mode === 'text') mf.executeCommand(['typedText', ' ']); else mf.insert('\\;', { format: 'latex', selectionMode: 'after' });
+    changed(mf);
+    return;
+  }
   if (spec.act === 'isotope') { if (mf.insertIsotope) mf.insertIsotope(); return; }
-  if (spec.key) { press(mf, spec.key); return; }
+  if (spec.key) { press(mf, spec.key, repeated); return; }
   if (spec.typ !== undefined) {
     const s = shift && /^[a-z]$/.test(spec.typ) ? spec.typ.toUpperCase() : spec.typ;
     for (const ch of s) mf.executeCommand(['typedText', ch, { simulateKeystroke: true }]);
@@ -110,20 +131,29 @@ function apply(spec) {
   }
   if (spec.ins !== undefined) {
     const tex = spec.ins.replace(/#\?/g, '\\placeholder{}');
-    mf.insert(tex, { format: 'latex', selectionMode: tex.includes('\\placeholder') ? 'placeholder' : 'after' });
+    // Immer als Formel einsetzen – auch wenn gerade Text geschrieben wird
+    mf.insert(tex, { format: 'latex', mode: 'math', selectionMode: tex.includes('\\placeholder') ? 'placeholder' : 'after' });
+    // Nach Einheiten („cm“, „°C“) und Wörtern („für“) als Formel weiterschreiben
+    if (mf.mode === 'text' && !tex.includes('\\placeholder')) mf.executeCommand(['switchMode', 'math']);
     changed(mf);
   }
 }
 
+// Taste „Text“ hervorheben, solange normaler Text geschrieben wird
+function markMode() {
+  const t = panel && panel.querySelector('.mk-key[aria-label="Text"]');
+  if (t) t.classList.toggle('on', !!field && field.mode === 'text');
+}
+
 function keyEl(spec) {
-  const b = h('button', { class: 'mk-key' + (spec.c ? ' ' + spec.c : ''), type: 'button' });
+  const b = h('button', { class: 'mk-key' + (spec.c ? ' ' + spec.c : ''), type: 'button', 'aria-label': spec.l });
   if (spec.w) b.style.gridColumn = `span ${spec.w}`;
   const shown = shift && spec.typ && /^[a-z]$/.test(spec.typ) ? spec.typ.toUpperCase() : null;
   if (spec.t && !shown) {
     const r = renderToString(spec.t, { display: false, mode: 'latex' });
     if (r.html) b.innerHTML = r.html; else b.textContent = spec.l;
   } else b.textContent = shown || spec.l;
-  bindKey(b, () => apply(spec), spec.key === 'Backspace');
+  bindKey(b, (repeated) => { apply(spec, repeated); markMode(); }, spec.key === 'Backspace');
   return b;
 }
 
@@ -135,8 +165,8 @@ function bindKey(b, fn, repeat = false) {
   b.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     b.classList.add('down');
-    fn();
-    if (repeat) t1 = setTimeout(() => { t2 = setInterval(fn, 70); }, 420);
+    fn(false);
+    if (repeat) t1 = setTimeout(() => { t2 = setInterval(() => fn(true), 70); }, 420);
   });
   for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, stop);
   b.addEventListener('mousedown', (e) => e.preventDefault());
@@ -147,6 +177,10 @@ function build() {
   panel = h('div', { class: 'math-kbd' });
   showBtn = h('button', { class: 'math-kbd-show', type: 'button', text: '∑ Mathe-Tastatur' });
   bindKey(showBtn, () => { collapsed = false; save(); show(field); });
+  // iPadOS soll Berührungen hier nicht als Geste deuten (Doppeltippen, Lupe,
+  // Zoomen, Wischen) – sonst gehen bei schnellem Tippen Tasten verloren.
+  // Die Pointer-Ereignisse für die Tasten kommen trotzdem.
+  for (const el of [panel, showBtn]) el.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
   document.body.append(panel, showBtn);
 }
 
@@ -168,7 +202,10 @@ function render() {
   tool('Einklappen', () => { collapsed = true; save(); show(field); });
   tool('Fertig', () => {
     const ed = window.heftApp && window.heftApp.editor;
-    if (ed && ed.activeAtom) ed.deactivate(); else if (field) field.blur();
+    if (ed && ed.activeAtom) ed.deactivate();
+    // Formel im Text: wie Enter – Fenster schließen, Formel übernehmen
+    else if (field && field.isConnected && field.closest('.popover')) press(field, 'Enter');
+    else if (field) field.blur();
     hide();
   }, 'done');
   // Jede Reihe für sich – kürzere Reihen rutschen sonst in die Reihe darüber
@@ -181,6 +218,7 @@ function render() {
   const side = h('div', { class: 'mk-side' });
   for (const spec of [k('⌫', { key: 'Backspace', c: 'mod' }), k('←', { key: 'ArrowLeft', c: 'mod' }), k('→', { key: 'ArrowRight', c: 'mod' }), k('⇥ Kästchen', { key: 'Tab', c: 'mod' }), k('↵ Zeile', { key: 'Enter', c: 'enter' })]) side.append(keyEl(spec));
   panel.append(top, h('div', { class: 'mk-body' }, grid, side));
+  markMode();
 }
 
 function show(mf) {
@@ -200,11 +238,16 @@ function show(mf) {
   // Formel nicht unter der Tastatur verstecken
   requestAnimationFrame(() => {
     if (!field) return;
-    const r = field.getBoundingClientRect();
+    // Formel im Text: Die Textstelle und das Formelfenster darunter müssen über die Tastatur passen
+    const pop = field.closest('.popover');
+    const anchor = (pop && document.querySelector('.im.active')) || field;
+    const r = anchor.getBoundingClientRect();
+    const below = pop && anchor !== field ? pop.offsetHeight + 12 : 0;
     const limit = window.innerHeight - panel.offsetHeight - 24;
-    if (r.bottom > limit) {
-      const view = field.closest('.view') || document.scrollingElement;
-      view.scrollBy({ top: r.bottom - limit + 40, behavior: 'smooth' });
+    if (r.bottom + below > limit) {
+      const view = anchor.closest('.view') || document.scrollingElement;
+      view.scrollBy({ top: r.bottom + below - limit + 40, behavior: pop ? 'auto' : 'smooth' });
+      if (pop && pop._reposition) pop._reposition();
     }
   });
 }

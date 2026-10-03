@@ -62,6 +62,8 @@ export function popover(anchor, content, opts = {}) {
   else el.append(content);
   document.body.append(el);
   placeNear(el, anchor, opts);
+  // Für Bewegungen von außen (z. B. Mathe-Tastatur scrollt den Eintrag)
+  el._reposition = () => placeNear(el, anchor, opts);
   let closed = false;
   const onDown = (e) => {
     if (el.contains(e.target)) return;

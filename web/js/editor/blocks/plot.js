@@ -918,6 +918,9 @@ function buildPanel(ed, b, panel) {
   const list = h('div');
   const err = h('div', { class: 'err' });
   const repaint = () => { b._repaint(); ed.changed({ soft: true }); };
+  // Beim Tippen höchstens einmal pro Bild neu zeichnen
+  let paintFrame = 0;
+  const repaintSoon = () => { cancelAnimationFrame(paintFrame); paintFrame = requestAnimationFrame(repaint); };
   // Zuletzt bearbeitete Zeile – dort setzen die Hilfsknöpfe an
   let focusIdx = 0;
 
@@ -961,7 +964,7 @@ function buildPanel(ed, b, panel) {
           f.tex = tex;
           f.expr = latexToExpr(tex);
           showState(f, i);
-          repaint();
+          repaintSoon();
         },
         onKey: (e, mf) => {
           if (e.key === 'Enter') { addRow('', i + 1); return true; }

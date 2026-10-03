@@ -1645,6 +1645,8 @@ export class Editor {
   }
 
   onBeforeInput(e) {
+    // Formelfelder haben ein eigenes Rückgängig (Zeichen für Zeichen) – nicht abfangen
+    if (e.inputType.startsWith('history') && e.target.closest && e.target.closest('math-field')) return;
     if (e.inputType === 'historyUndo') { e.preventDefault(); this.undo(); return; }
     if (e.inputType === 'historyRedo') { e.preventDefault(); this.redo(); return; }
     const t = e.target.closest && e.target.closest('.blk-text');

@@ -243,7 +243,7 @@ export function openInlineMath(ed, span, el, initial) {
       if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); pop.close(); return true; }
       return false;
     },
-    onMoveOut: (dir) => { if (dir === 'forward' || dir === 'backward') pop.close(); },
+    onMoveOut: (dir, mf, { stay } = {}) => { if (!stay && (dir === 'forward' || dir === 'backward')) pop.close(); },
     extraMenu: () => [{ label: 'Als LaTeX bearbeiten', icon: 'code', onSelect: sourceMode }]
   }).then((mf) => {
     if (pop.closed) return;

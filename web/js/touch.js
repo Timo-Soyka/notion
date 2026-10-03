@@ -100,6 +100,8 @@ export function installTouch() {
   };
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') { tap = null; return; }
+    // Mathe-Tastatur: immer sichtbar, und jedes Nachrechnen bremst schnelles Tippen
+    if (e.target.closest && e.target.closest('.math-kbd, .math-kbd-show')) { tap = null; return; }
     const ctl = e.target.closest && e.target.closest(CONTROL);
     tap = { target: e.target, ctl, visible: !ctl || shown(ctl), until: 0 };
   }, true);

@@ -9,7 +9,7 @@
 import { markColor, markName, cleanFieldLatex } from '../core/mathlines.js';
 import { menu, promptDialog } from '../ui/ui.js';
 import { isPad } from '../bridge.js';
-import { mathKeyboardEnabled } from './mathkeyboard.js';
+import { mathKeyboardEnabled, mathKeyboardPress } from './mathkeyboard.js';
 
 let loading = null;
 
@@ -26,6 +26,34 @@ export function loadMathLive() {
     });
   }
   return loading;
+}
+
+// Wie tief steckt die Einfügemarke (0 = direkt in der Zeile, sonst in Bruch,
+// Wurzel, Hochzahl …)? Diese MathLive-Version hat dafür keine eigene Funktion mehr.
+export function caretDepth(mf, pos = mf.position) {
+  try {
+    let atom = mf._mathfield.model.at(pos), d = 0;
+    while (atom && atom.parent && atom.parent.type !== 'root') { d++; atom = atom.parent; }
+    return d;
+  } catch { return 1; }
+}
+
+// MathLive merkt sich das zuletzt fokussierte Feld. Wird es entfernt, bevor es
+// den Fokus abgegeben hat (Block geschlossen, Zeilen neu aufgebaut), stürzt das
+// nächste Feld beim Fokussieren darüber ab – kein Fokus, keine Tastatur.
+// Solche verwaisten Felder deshalb vorher vergessen.
+let focusGuard = false;
+function guardStaleFocus(mf) {
+  const m = mf._mathfield;
+  const M = m && m.constructor;
+  if (focusGuard || !M || typeof M.prototype.onFocus !== 'function') return;
+  focusGuard = true;
+  const orig = M.prototype.onFocus;
+  M.prototype.onFocus = function (...args) {
+    const g = M._globallyFocusedMathfield;
+    if (g && g !== this && (!g.keyboardDelegate || !g.model || !g.model.mathfield)) M._globallyFocusedMathfield = undefined;
+    return orig.apply(this, args);
+  };
 }
 
 // Isotop: leerer Sockel mit Hoch- und Tiefzahl, davor steht nichts.
@@ -187,6 +215,7 @@ export async function createField(opts = {}) {
   if (opts.inline) mf.classList.add('inline');
   // Die meisten Einstellungen nimmt MathLive erst an, wenn das Feld auf der Seite ist
   mf.addEventListener('mount', () => {
+    guardStaleFocus(mf);
     mf.mathVirtualKeyboardPolicy = 'manual';
     mf.menuItems = [];
     mf.smartFence = true;
@@ -278,6 +307,8 @@ export async function createField(opts = {}) {
     const now = mf.getValue('latex');
     if (countBounds(now) > countBounds(lastLatex)) { const up = preferLowerBound(mf); if (up) upper = up; }
     lastLatex = now;
+    // Schon hinter dem Nuklid (z. B. mit → verlassen)? Dann ist Tab wieder normal
+    if (e.key === 'Tab' && iso && caretDepth(mf) === 0) endIsotope();
     if (e.key === 'Tab' && iso && plain && !e.shiftKey) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -457,7 +488,10 @@ export async function createField(opts = {}) {
   mf.insertIsotope = () => { insertIsotope(mf); emit(); };
 
   mf.addEventListener('move-out', (e) => {
-    if (opts.onMoveOut) { e.preventDefault(); opts.onMoveOut(e.detail && e.detail.direction, mf); }
+    // Von der Mathe-Tastatur (iPad): höchstens die Zeile wechseln, nichts schließen
+    const stay = !!mathKeyboardPress();
+    if (opts.onMoveOut) { e.preventDefault(); opts.onMoveOut(e.detail && e.detail.direction, mf, { stay }); }
+    else if (stay) e.preventDefault();
   });
 
   mf.addEventListener('contextmenu', (e) => {
