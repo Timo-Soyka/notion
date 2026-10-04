@@ -792,41 +792,41 @@ const relInfo = (op) => ({ lt: /^(<|<=|=<|≤|⩽)$/.test(op), incl: /=|≤|≥|
 const INTERVAL = /([\[\]\(])\s*([^\[\]()§;|]+?)\s*(?:;|\||,(?!\d))\s*([^\[\]()§;|]+?)\s*([\[\]\)])/g;
 
 // Grenze lesen: Zahl, Term oder ±∞ – als Baum (wird später mit Parametern ausgewertet)
-function boundTree(src) {
+function boundTree(src, v = 'x') {
   const s = String(src).trim().replace(/^\+/, '');
   const inf = /^(-)?\s*(∞|oo|inf|infinity|unendlich)$/i.exec(s);
   if (inf) return num(inf[1] ? -Infinity : Infinity);
   const t = parseExpr(s);
-  if (hasVar(t, 'x')) throw new Error('Grenze enthält x');
+  if (hasVar(t, v)) throw new Error('Grenze enthält ' + v);
   return t;
 }
 
 const iv = (lo, hi, loIncl, hiIncl) => ({ t: 'iv', lo, hi, loIncl: !!loIncl, hiIncl: !!hiIncl });
 
-// → Bedingungsbaum oder null
-export function parseCondition(text) {
+// → Bedingungsbaum oder null. v: Variable der Bedingung (y bei senkrechten Geraden: x = 3 für 0 ≤ y ≤ 4)
+export function parseCondition(text, v = 'x') {
   let s = String(text || '').trim().replace(/\s+/g, ' ');
   if (!s) return null;
   const brackets = [];
   s = s.replace(INTERVAL, (m, open, a, b, close) => { brackets.push({ open, a, b, close }); return ` §${brackets.length - 1}§ `; }).trim();
   const atom = (p) => {
     p = p.trim();
-    const bm = /^(?:x\s*(?:∈|in|el)\s*|D(?:_?f)?\s*=\s*)?§(\d+)§$/i.exec(p);
+    const bm = new RegExp(`^(?:${v}\\s*(?:∈|in|el)\\s*|D(?:_?f)?\\s*=\\s*)?§(\\d+)§$`, 'i').exec(p);
     if (bm) {
       const b = brackets[+bm[1]];
-      return iv(boundTree(b.a), boundTree(b.b), b.open === '[', b.close === ']');
+      return iv(boundTree(b.a, v), boundTree(b.b, v), b.open === '[', b.close === ']');
     }
     const bits = p.split(REL).map(x => x.trim());
     if (bits.length < 3 || bits.length % 2 === 0) throw new Error('keine Bedingung');
-    const xi = bits.findIndex((b, k) => k % 2 === 0 && b === 'x');
+    const xi = bits.findIndex((b, k) => k % 2 === 0 && b === v);
     if (xi < 0) throw new Error('keine Bedingung');
     const parts = [];
     for (const k of [xi - 1, xi + 1]) {
       if (k < 1 || k >= bits.length) continue;
       const r = relInfo(bits[k]);
       // a < x → untere Grenze; x < b → obere
-      if (k < xi) parts.push(r.lt ? iv(boundTree(bits[k - 1]), null, r.incl, false) : iv(null, boundTree(bits[k - 1]), false, r.incl));
-      else parts.push(r.lt ? iv(null, boundTree(bits[k + 1]), false, r.incl) : iv(boundTree(bits[k + 1]), null, r.incl, false));
+      if (k < xi) parts.push(r.lt ? iv(boundTree(bits[k - 1], v), null, r.incl, false) : iv(null, boundTree(bits[k - 1], v), false, r.incl));
+      else parts.push(r.lt ? iv(null, boundTree(bits[k + 1], v), false, r.incl) : iv(boundTree(bits[k + 1], v), null, r.incl, false));
     }
     if (parts.length === 1) return parts[0];
     const node = { t: 'and', parts };
@@ -836,8 +836,8 @@ export function parseCondition(text) {
       const [a, b] = [bits[xi - 2], bits[xi + 2]];
       const [lo, hi] = [a, b].sort((u, v) => (parseFloat(u.replace(',', '.')) || 0) - (parseFloat(v.replace(',', '.')) || 0));
       node.hint = lows.length === 2
-        ? `„${p}“ heißt: x > ${a} und x > ${b}. Für x zwischen ${lo} und ${hi}: ${lo} < x < ${hi}`
-        : `„${p}“ heißt: x < ${a} und x < ${b}. Für x zwischen ${lo} und ${hi}: ${lo} < x < ${hi}`;
+        ? `„${p}“ heißt: ${v} > ${a} und ${v} > ${b}. Für ${v} zwischen ${lo} und ${hi}: ${lo} < ${v} < ${hi}`
+        : `„${p}“ heißt: ${v} < ${a} und ${v} < ${b}. Für ${v} zwischen ${lo} und ${hi}: ${lo} < ${v} < ${hi}`;
     }
     return node;
   };
@@ -868,7 +868,7 @@ function findHint(n) {
 }
 
 // Term und Einschränkung trennen: "x^2 für x < 3" → { body: "x^2", cond }
-export function splitCondition(body) {
+export function splitCondition(body, v = 'x') {
   const s = String(body || '');
   const tries = [];
   // {x < 3} am Ende (wie bei Desmos)
@@ -887,7 +887,7 @@ export function splitCondition(body) {
   }
   tries.sort((a, b) => a[0] - b[0]);
   for (const [at, rest] of tries) {
-    const cond = parseCondition(rest);
+    const cond = parseCondition(rest, v);
     if (cond) { cond.text = rest.trim(); return { body: s.slice(0, at).trim(), cond }; }
   }
   return { body: s, cond: null };
@@ -962,18 +962,18 @@ export function inInterval(ivs, x) {
   return false;
 }
 
-// Für die Legende: "0 ≤ x < 3", "x < -1 oder x > 1"
-export function conditionTex(cond, params = {}) {
+// Für die Legende: "0 ≤ x < 3", "x < -1 oder x > 1" (v: Variable, y bei senkrechten Geraden)
+export function conditionTex(cond, params = {}, v = 'x') {
   if (!cond) return '';
   const isInf = (t, v) => t && t.t === 'num' && t.v === v;
   const chain = (lo, loIncl, hi, hiIncl) => {
     const L = lo && !isInf(lo, -Infinity) ? toTex(lo) : null;
     const H = hi && !isInf(hi, Infinity) ? toTex(hi) : null;
     const rel = (incl) => (incl ? ' \\le ' : ' < ');
-    if (L && H) return `${L}${rel(loIncl)}x${rel(hiIncl)}${H}`;
-    if (H) return `x${rel(hiIncl)}${H}`;
-    if (L) return `x${loIncl ? ' \\ge ' : ' > '}${L}`;
-    return 'x \\in \\mathbb{R}';
+    if (L && H) return `${L}${rel(loIncl)}${v}${rel(hiIncl)}${H}`;
+    if (H) return `${v}${rel(hiIncl)}${H}`;
+    if (L) return `${v}${loIncl ? ' \\ge ' : ' > '}${L}`;
+    return `${v} \\in \\mathbb{R}`;
   };
   // Mehrere einzelne Grenzen zu einer Kette zusammenfassen, wenn es genau eine untere und eine obere gibt
   const merged = (parts) => {

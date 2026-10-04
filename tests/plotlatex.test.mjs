@@ -28,6 +28,11 @@ eq('für als text', latexToExpr('f(x)=x^2\\text{ für }x\\le3'), 'f(x)=x^2 für 
 eq('mehrere bedingungen', evalCondition(splitCondition(splitDefinition(latexToExpr('f(x)=x^2\\text{ für }x>0;x<4')).body).cond, {}).map(v => [v.lo, v.hi]), [[0, 4]]);
 eq('intervall', latexToExpr('f(x)=x\\text{ für }x\\in\\left]0;\\infty\\right['), 'f(x)=x für x∈]0;∞[');
 eq('tangente', latexToExpr('\\operatorname{tangente}\\left(f,1\\right)'), 'tangente(f,1)');
+// Senkrechte Gerade, eingeschränkt über y
+const vert = (tex) => { const d = splitDefinition(latexToExpr(tex)); const sc = splitCondition(d.body, 'y'); return [d.vertical, sc.body, sc.cond && evalCondition(sc.cond, {}).map(v => [v.lo, v.hi, v.loIncl, v.hiIncl])]; };
+eq('senkrecht eingeschränkt', vert('x=3\\text{ für }0\\le y\\le4'), [true, '3', [[0, 4, true, true]]]);
+eq('senkrecht intervall', vert('x=3\\text{ für }y\\in\\left[0;4\\right['), [true, '3', [[0, 4, true, false]]]);
+eq('senkrecht zurück', exprToLatex('x=3 für 0≤y<4'), 'x=3\\text{ für }0 \\le y < 4');
 eq('platzhalter', latexToExpr('\\int_{\\placeholder{}}^{2}f(x)\\,\\mathrm{d}x'), '∫_()^2f(x) dx');
 
 // Rückweg: ältere Graphen im Formelfeld anzeigen

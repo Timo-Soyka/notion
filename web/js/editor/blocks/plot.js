@@ -66,10 +66,12 @@ export function prepare(config) {
   const rows = entries.map((entry, index) => {
     const d = splitDefinition(entry.expr);
     const row = { ...d, entry, index };
-    if (d.param || d.vertical) return row;
-    const sc = splitCondition(d.body);
+    if (d.param) return row;
+    // Senkrechte Gerade: Einschränkung für y (x = 3 für 0 ≤ y ≤ 4)
+    const sc = splitCondition(d.body, d.vertical ? 'y' : 'x');
     row.body = sc.body;
     row.cond = sc.cond;
+    if (d.vertical) return row;
     if (!row.name) {
       const dm = /^(\p{L})('+)\(\s*x\s*\)$/u.exec(row.body.trim());
       if (dm) row.derivOf = { f: dm[1], d: dm[2].length };
@@ -178,9 +180,11 @@ export function prepare(config) {
     if (!r.tree || r.kind === 'area') continue;
     try {
       r.raw = compile(r.tree, env);
-      r.iv = evalCondition(r.cond, params);
-      if (r.iv && !r.iv.length) throw new Error('Die Bedingungen widersprechen sich – der Graph wäre nirgends zu sehen');
-      r.fn = r.iv ? piecewise([{ fn: r.raw, iv: r.iv }]) : r.raw;
+      const iv = evalCondition(r.cond, params);
+      if (iv && !iv.length) throw new Error('Die Bedingungen widersprechen sich – der Graph wäre nirgends zu sehen');
+      // Senkrechte Gerade: Die Bereiche gelten für y, die Gerade selbst bleibt x = Zahl
+      if (r.vertical) { r.yiv = iv; r.fn = r.raw; }
+      else { r.iv = iv; r.fn = iv ? piecewise([{ fn: r.raw, iv }]) : r.raw; }
     } catch (err) { r.error = err.message; r.fn = null; }
   }
   for (const [name, list] of byName) {
@@ -530,7 +534,20 @@ export function drawPlot(config, width, prepared, height) {
       let xv;
       try { xv = c.fn(0); } catch { continue; }
       if (!Number.isFinite(xv)) continue;
-      curves.append(s('line', { class: 'curve dashed', x1: sx(xv), x2: sx(xv), y1: margin.t, y2: margin.t + plotH, stroke: c.color }));
+      const r = c.rows[0];
+      if (!r.yiv) {
+        curves.append(s('line', { class: 'curve dashed', x1: sx(xv), x2: sx(xv), y1: margin.t, y2: margin.t + plotH, stroke: c.color }));
+        continue;
+      }
+      // Eingeschränkt: nur die Stücke, mit Randpunkten wie bei Funktionen
+      for (const iv of r.yiv) {
+        const lo = Math.max(ymin, iv.lo), hi = Math.min(ymax, iv.hi);
+        if (hi <= lo) continue;
+        curves.append(s('line', { class: 'curve' + (r.entry.dashed ? ' dashed' : ''), x1: sx(xv), x2: sx(xv), y1: sy(hi), y2: sy(lo), stroke: c.color }));
+        for (const [yb, incl] of [[iv.lo, iv.loIncl], [iv.hi, iv.hiIncl]]) {
+          if (Number.isFinite(yb) && yb >= ymin && yb <= ymax && xv >= xmin && xv <= xmax) dots.push({ x: xv, y: yb, incl, color: c.color });
+        }
+      }
       continue;
     }
     for (const r of c.rows) {
@@ -662,7 +679,7 @@ export function legendItems(P) {
     const r = c.rows[0];
     if (!r.tree) continue;
     let tex;
-    if (c.vertical) tex = 'x = ' + toTex(r.tree);
+    if (c.vertical) tex = 'x = ' + toTex(r.tree) + (r.cond ? `,\\; ${conditionTex(r.cond, P.params, 'y')}` : '');
     else if (c.pieces) {
       const rows = c.rows.filter(x => x.tree);
       tex = `${c.name}(x) = \\begin{cases} ${rows.map(x => `${toTex(x.tree)}, & ${conditionTex(x.cond, P.params)}`).join(' \\\\ ')} \\end{cases}`;
@@ -1081,7 +1098,10 @@ function buildPanel(ed, b, panel) {
   helper('Einschränken', 'Nur ein Teil des Graphen, z. B. für x < 3 oder für 0 ≤ x ≤ 2. Nochmal klicken: weitere Bedingung (mit ; getrennt)', () => {
     const f = c.functions[focusIdx];
     if (!f) return;
-    insertInRow(hasCond(f) ? ';x>#?' : '\\text{ für }x<#?', { atEnd: true });
+    // Senkrechte Gerade (x = 3): eingeschränkt wird y
+    const d = splitDefinition(f.expr || '');
+    const v = d.vertical ? 'y' : 'x';
+    insertInRow(splitCondition(d.body, v).cond ? `;${v}>#?` : `\\text{ für }${v}<#?`, { atEnd: true });
   });
   helper('Abschnittsweise', 'Weiterer Abschnitt derselben Funktion (gleicher Name, anderer Bereich)', () => {
     const n = nameAt(focusIdx);

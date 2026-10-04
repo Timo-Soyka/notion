@@ -121,6 +121,7 @@ function apply(spec, repeated = false) {
     return;
   }
   if (spec.act === 'isotope') { if (mf.insertIsotope) mf.insertIsotope(); return; }
+  if (spec.key === 'Backspace' && deleteWord(mf)) { changed(mf); return; }
   if (spec.key) { press(mf, spec.key, repeated); return; }
   if (spec.typ !== undefined) {
     const s = shift && /^[a-z]$/.test(spec.typ) ? spec.typ.toUpperCase() : spec.typ;
@@ -137,6 +138,20 @@ function apply(spec, repeated = false) {
     if (mf.mode === 'text' && !tex.includes('\\placeholder')) mf.executeCommand(['switchMode', 'math']);
     changed(mf);
   }
+}
+
+// Wörter der Tastatur („für“, „und“, „oder“) löscht die Rücktaste ganz – sonst
+// stünde die Einfügemarke danach im Wort, und alles Weitere würde Text statt Formel
+const WORDS = [' für ', ' und ', ' oder '];
+function deleteWord(mf) {
+  if (!mf.selectionIsCollapsed) return false;
+  const pos = mf.position;
+  const w = WORDS.find(x => pos >= x.length && mf.getValue(pos - x.length, pos) === `\\text{${x}}`);
+  if (!w) return false;
+  mf.selection = { ranges: [[pos - w.length, pos]] };
+  mf.executeCommand('deleteBackward');
+  if (mf.mode === 'text') mf.executeCommand(['switchMode', 'math']);
+  return true;
 }
 
 // Taste „Text“ hervorheben, solange normaler Text geschrieben wird

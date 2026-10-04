@@ -133,10 +133,11 @@ export function exprToLatex(expr) {
   try {
     const d = splitDefinition(src);
     const head = d.param ? `${d.name}=` : d.vertical ? 'x=' : d.name ? (d.area ? `${d.name}=` : `${d.name}(x)=`) : /^y\s*=/.test(src) ? 'y=' : '';
-    if (d.param || d.vertical) return head + tex(d.body);
-    const sc = splitCondition(d.body);
+    if (d.param) return head + tex(d.body);
+    const v = d.vertical ? 'y' : 'x';
+    const sc = splitCondition(d.body, v);
     let out = head + tex(sc.body);
-    if (sc.cond) out += `\\text{ für }${conditionTex(sc.cond)}`;
+    if (sc.cond) out += `\\text{ für }${conditionTex(sc.cond, {}, v)}`;
     return out.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
   } catch {
     // Nicht lesbar: so übernehmen, wie es ist (das Feld zeigt dann den Fehler)
