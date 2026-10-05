@@ -5,6 +5,7 @@ import { icon } from '../ui/icons.js';
 import { subjectColor, subjectOfFolder } from '../core/subjects.js';
 import { iconFor } from '../core/filetypes.js';
 import { call, isPad } from '../bridge.js';
+import { penActive } from '../palm.js';
 
 const KIND_ICON = { group: 'folder', note: 'note', bundle: 'folder', pdf: 'pdf', image: 'image', file: 'file' };
 const isFolder = (n) => n.kind === 'group' || n.kind === 'bundle';
@@ -372,6 +373,8 @@ export class Sidebar {
 
   attachDnD(row, n) {
     row.addEventListener('dragstart', (e) => {
+      // iPad: vom Handballen beim Schreiben, nicht gewollt
+      if (penActive()) { e.preventDefault(); return; }
       e.dataTransfer.setData('application/x-heft-record', n.uuid);
       e.dataTransfer.effectAllowed = 'move';
       this.dragging = n;

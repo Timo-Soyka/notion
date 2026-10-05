@@ -5,6 +5,7 @@ import { h, closeAllPopovers } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { block, isEmptyHTML } from '../core/markdown.js';
 import { segsToText, htmlToSegs } from '../core/inline.js';
+import { isPalm, onPenDown } from '../palm.js';
 
 const CAN_NEST = (b) => !['columns', 'column', 'hr', 'pagebreak', 'toc'].includes(b.type);
 
@@ -179,6 +180,7 @@ export function attachDnd(ed) {
     const scroller = ed.root.closest('.view') || document.scrollingElement;
     let scrollTimer = null;
     const mine = (ev) => !touch || ev.pointerId === touch.id;
+    let offPen = null;
     const move = (ev) => {
       if (!mine(ev)) return;
       if (touch) ev.preventDefault();
@@ -219,6 +221,7 @@ export function attachDnd(ed) {
         window.removeEventListener('pointermove', move, true);
         window.removeEventListener('pointerup', up, true);
         window.removeEventListener('pointercancel', cancel, true);
+        if (offPen) offPen();
         touchGrab = false;
       } else {
         window.removeEventListener('mousemove', move);
@@ -243,6 +246,8 @@ export function attachDnd(ed) {
       window.addEventListener('pointermove', move, { capture: true, passive: false });
       window.addEventListener('pointerup', up, true);
       window.addEventListener('pointercancel', cancel, true);
+      // Setzt der Pencil auf, während ein Finger den Griff hält, war es der Handballen
+      if (touch.type === 'touch') offPen = onPenDown(() => cancel({ pointerId: touch.id }));
     } else {
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
@@ -258,7 +263,7 @@ export function attachDnd(ed) {
   // Block antippen zu müssen
   let touchGrab = false;
   d.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' || !e.isPrimary || ed.readonly || dragging) return;
+    if (e.pointerType === 'mouse' || !e.isPrimary || ed.readonly || dragging || isPalm(e)) return;
     const t = e.target;
     if (t.closest && t.closest('.col-resize, .tcol-resize, .plot-resize, .img-handle, .popover')) return;
     // Der sichtbare +-Knopf bleibt ein Knopf
@@ -274,7 +279,7 @@ export function attachDnd(ed) {
     hoverBlock = b;
     place(b);
     touchGrab = true;
-    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown });
+    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, type: e.pointerType, menu: shown });
   }, true);
   // Solange der Griff gehalten wird: kein Scrollen, keine Handschrift-Erkennung
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });
