@@ -237,9 +237,14 @@ final class TouchWatcher: UIGestureRecognizer {
 // einen Moment später. Kurz nach einem Finger-Tipp deshalb ja, sonst wie immer
 // (beim Schreiben mit dem Pencil entscheidet weiter iPadOS).
 final class FocusPolicy: NSObject {
+    /// Bis dahin kommt die Tastatur auf jeden Fall – die Oberfläche bittet darum
+    /// (Taste „Text“ der Mathe-Tastatur), auch wenn sie mit dem Pencil gedrückt wurde
+    static var allowUntil = Date.distantPast
+
     @objc(_webView:decidePolicyForFocusedElement:)
     func decidePolicy(_ webView: WKWebView, focusedElement info: AnyObject) -> Int {
-        Date().timeIntervalSince(TouchWatcher.lastFingerTouch) < 1.5 ? 1 : 0   // 1 = zeigen, 0 = wie immer
+        if Date() < Self.allowUntil { return 1 }
+        return Date().timeIntervalSince(TouchWatcher.lastFingerTouch) < 1.5 ? 1 : 0   // 1 = zeigen, 0 = wie immer
     }
 }
 

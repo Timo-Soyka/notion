@@ -259,6 +259,12 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "window.dragRegions", "window.theme", "app.quitReady":
             reply(.success(true))
 
+        case "keyboard.allow":
+            // Gleich folgt ein neuer Fokus, der die normale Tastatur zeigen soll (Taste „Text“).
+            // Sofort setzen – die Nachricht kommt vor der Fokus-Meldung von WebKit an.
+            FocusPolicy.allowUntil = Date().addingTimeInterval(2)
+            reply(.success(true))
+
         // ---------------- PDF ----------------
 
         case "pdf.open":

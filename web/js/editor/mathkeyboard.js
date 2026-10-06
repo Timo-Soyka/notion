@@ -5,8 +5,11 @@
 // Rechenzeichen, Bruch, Wurzel, Hochzahl, Funktionen, Integrale, griechische
 // Buchstaben, Einheiten und die Heft-Besonderheiten (Ausrichtungspunkt,
 // Kommandostrich). Die Tasten nehmen dem Formelfeld nie den Fokus weg.
+// „Text“ holt für Wörter die normale iPad-Tastatur (auch mit gekoppeltem
+// Pencil); „∑ Mathe-Tastatur“ führt zurück.
 
 import { h } from '../ui/ui.js';
+import { call } from '../bridge.js';
 import { renderToString } from './render/katex.js';
 import { icon } from '../ui/icons.js';
 
@@ -32,7 +35,7 @@ const LAYERS = [
       [ins('sin', '\\sin(#?)', { t: '\\sin' }), ins('cos', '\\cos(#?)', { t: '\\cos' }), ins('tan', '\\tan(#?)', { t: '\\tan' }), ins('sin⁻¹', '\\sin^{-1}(#?)', { t: '\\sin^{-1}' }), ins('cos⁻¹', '\\cos^{-1}(#?)', { t: '\\cos^{-1}' }), ins('tan⁻¹', '\\tan^{-1}(#?)', { t: '\\tan^{-1}' }), ins('ln', '\\ln(#?)', { t: '\\ln' }), ins('log', `\\log_{${P}}(${P})`, { t: '\\log_{\\square}' }), ins('lg', '\\lg(#?)', { t: '\\lg' }), ins('eˣ', `\\mathrm{e}^{${P}}`, { t: '\\mathrm{e}^{\\square}' })],
       [ins('f(x)', 'f(x)', { t: 'f(x)' }), ins("f'(x)", "f^{\\prime}(x)", { t: "f'(x)" }), ins("f''(x)", "f^{\\prime\\prime}(x)", { t: "f''(x)" }), ins('d/dx', `\\frac{\\mathrm{d}}{\\mathrm{d}x}`, { t: '\\frac{\\mathrm{d}}{\\mathrm{d}x}' }), ins('∫ₐᵇ', `\\int_{${P}}^{${P}}${P}\\,\\mathrm{d}x`, { t: '\\int_a^b' }), ins('∫', `\\int ${P}\\,\\mathrm{d}x`, { t: '\\int' }), ins('[F]ₐᵇ', `\\left[${P}\\right]_{${P}}^{${P}}`, { t: '\\left[F\\right]_a^b' }), ins('lim', `\\lim_{${P}\\to ${P}}`, { t: '\\lim' }), ins('→', '\\to ', { t: '\\to' }), ins('n!', '#@!', { t: 'n!' })],
       [ins('Σ', `\\sum_{${P}}^{${P}}`, { t: '\\sum' }), ins('Π', `\\prod_{${P}}^{${P}}`, { t: '\\prod' }), ins('(ⁿₖ)', `\\binom{${P}}{${P}}`, { t: '\\binom{n}{k}' }), ins('[a;b]', `\\left[${P};${P}\\right]`, { t: '[a;b]' }), ins(']a;b[', `\\left]${P};${P}\\right[`, { t: ']a;b[' }), ins('∈', '\\in ', { t: '\\in' }), ins('∉', '\\notin ', { t: '\\notin' }), ins('ℝ', '\\mathbb{R}', { t: '\\mathbb{R}' }), ins('ℕ', '\\mathbb{N}', { t: '\\mathbb{N}' }), ins('ℤ', '\\mathbb{Z}', { t: '\\mathbb{Z}' })],
-      [ins('ℚ', '\\mathbb{Q}', { t: '\\mathbb{Q}' }), ins('⇒', '\\Rightarrow ', { t: '\\Rightarrow' }), ins('⇔', '\\Leftrightarrow ', { t: '\\Leftrightarrow' }), ins('{ }', `\\left\\{${P}\\right\\}`, { t: '\\{\\square\\}' }), ins('∪', '\\cup ', { t: '\\cup' }), ins('∩', '\\cap ', { t: '\\cap' }), ins('∅', '\\emptyset ', { t: '\\emptyset' }), ins('⃗v', `\\vec{${P}}`, { t: '\\vec{v}' }), ins('x̄', `\\overline{${P}}`, { t: '\\overline{x}' }), ins('\\', '\\setminus ', { t: '\\setminus' })]
+      [ins('ℚ', '\\mathbb{Q}', { t: '\\mathbb{Q}' }), ins('⇒', '\\Rightarrow ', { t: '\\Rightarrow' }), ins('⇔', '\\Leftrightarrow ', { t: '\\Leftrightarrow' }), ins('{ }', `\\left\\{${P}\\right\\}`, { t: '\\{\\square\\}' }), ins('∪', '\\cup ', { t: '\\cup' }), ins('∩', '\\cap ', { t: '\\cap' }), ins('∅', '\\emptyset ', { t: '\\emptyset' }), ins('⃗v', `\\vec{${P}}`, { t: '\\vec{v}' }), ins('x̄', `\\overline{${P}}`, { t: '\\overline{x}' }), ins('Δ', '\\Delta ', { t: '\\Delta' })]
     ]
   },
   {
@@ -47,8 +50,9 @@ const LAYERS = [
     id: 'abc', label: 'abc', rows: [
       'qwertzuiop'.split('').map(ch => typ(ch, ch, { c: 'var' })),
       'asdfghjkl'.split('').map(ch => typ(ch, ch, { c: 'var' })),
-      [k('⇧', { act: 'shift', c: 'mod' }), ...'yxcvbnm'.split('').map(ch => typ(ch, ch, { c: 'var' })), k('Text', { act: 'text', c: 'mod' })],
-      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }'), k('\\', { act: 'latex', c: 'mod' })]
+      [k('⇧', { act: 'shift', c: 'mod' }), ...'yxcvbnm'.split('').map(ch => typ(ch, ch, { c: 'var' })), k('Text', { act: 'system', c: 'mod' })],
+      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }'),
+        ins('ohne', '\\setminus ', { t: '\\setminus' }), k('\\', { act: 'latex', c: 'mod' })]
     ]
   },
   {
@@ -70,17 +74,27 @@ export function setMathKeyboard(on) { enabled = on !== false; if (!enabled) hide
 export const mathKeyboardEnabled = () => enabled;
 
 let panel = null, showBtn = null, field = null, layer = 'zahlen', shift = false, hideTimer = 0;
+// Formelfeld, das gerade die normale iPad-Tastatur benutzt („Text“)
+let sysField = null;
 
 const isMF = (el) => el && el.matches && el.matches('math-field.heft-mf');
 
 export function installMathKeyboard() {
   document.addEventListener('focusin', (e) => {
     const mf = e.target && e.target.closest && e.target.closest('math-field.heft-mf');
-    if (mf && enabled) { clearTimeout(hideTimer); show(mf); }
+    if (!mf || !enabled) return;
+    clearTimeout(hideTimer);
+    // Anderes Formelfeld: das vorige bekommt beim nächsten Mal wieder die Mathe-Tastatur
+    if (sysField && sysField !== mf) leaveSystemKeyboard();
+    show(mf);
   }, true);
   document.addEventListener('focusout', () => {
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => { if (!isMF(document.activeElement)) hide(); }, 150);
+    hideTimer = setTimeout(() => {
+      if (isMF(document.activeElement)) return;
+      leaveSystemKeyboard();
+      hide();
+    }, 150);
   }, true);
   // iPad gedreht: Die Tastatur ist dann höher oder flacher
   window.addEventListener('resize', () => {
@@ -89,6 +103,50 @@ export function installMathKeyboard() {
 }
 
 function sinkOf(mf) { return mf && mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink'); }
+
+// Welche Bildschirmtastatur iPadOS für das Feld zeigt: keine (Mathe-Tastatur) oder die normale
+function setInputMode(mf, mode) { const s = sinkOf(mf); if (s) s.setAttribute('inputmode', mode); }
+
+// Neu fokussieren, damit iPadOS die geänderte Tastaturart übernimmt. Die App
+// erlaubt die Tastatur dafür kurz ausdrücklich – auch wenn die Taste mit dem
+// Pencil gedrückt wurde (dann zeigte iPadOS sonst nur die Schreibpalette).
+function refocus(mf) {
+  call('keyboard.allow').catch(() => { /* nur in der iPad-App */ });
+  const sel = mf.selection;
+  mf.blur();
+  mf.focus();
+  try { mf.selection = sel; } catch { /* egal */ }
+}
+
+// „Text“: normale iPad-Tastatur für Wörter in der Formel
+function useSystemKeyboard(mf) {
+  if (!mf || !mf.isConnected) return;
+  if (mf.mode !== 'text') mf.executeCommand(['switchMode', 'text']);
+  sysField = mf;
+  setInputMode(mf, 'text');
+  show(mf);
+  refocus(mf);
+}
+
+// „∑ Mathe-Tastatur“: zurück von der normalen Tastatur
+function useMathKeyboard() {
+  const mf = sysField;
+  sysField = null;
+  if (!mf || !mf.isConnected) return;
+  setInputMode(mf, 'none');
+  if (mf.mode === 'text') mf.executeCommand(['switchMode', 'math']);
+  collapsed = false;
+  save();
+  show(mf);
+  refocus(mf);
+}
+
+// Feld verlassen: beim nächsten Antippen wieder die Mathe-Tastatur
+function leaveSystemKeyboard() {
+  if (!sysField) return;
+  setInputMode(sysField, 'none');
+  sysField = null;
+}
 
 // Echte Taste nachmachen (Rücktaste, Pfeile, Tab, Enter) – so greifen auch Heft-Sonderfälle
 let pressing = null, lastBack = 0;
@@ -113,8 +171,7 @@ function apply(spec, repeated = false) {
   const mf = field;
   if (!mf || !mf.isConnected) return;
   if (spec.act === 'shift') { shift = !shift; render(); return; }
-  // „Text“ schaltet zwischen normalem Text und Formel um
-  if (spec.act === 'text') { mf.executeCommand(['switchMode', mf.mode === 'text' ? 'math' : 'text']); markMode(); return; }
+  if (spec.act === 'system') { useSystemKeyboard(mf); return; }
   // \ wie auf einer echten Tastatur: LaTeX-Befehl eintippen (\alpha …);
   // Leerzeichen, Zeile oder Kästchen übernehmen ihn
   if (spec.act === 'latex') { mf.executeCommand(['switchMode', 'latex', '', '\\']); return; }
@@ -199,7 +256,20 @@ function bindKey(b, fn, repeat = false) {
 function build() {
   panel = h('div', { class: 'math-kbd' });
   showBtn = h('button', { class: 'math-kbd-show', type: 'button', text: '∑ Mathe-Tastatur' });
-  bindKey(showBtn, () => { collapsed = false; save(); show(field); });
+  bindKey(showBtn, () => {
+    if (sysField) { useMathKeyboard(); return; }
+    collapsed = false; save(); show(field);
+  });
+  // Über der normalen iPad-Tastatur bleiben (sie verdeckt sonst den unteren Bildrand)
+  const vv = window.visualViewport;
+  if (vv) {
+    const place = () => {
+      const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      showBtn.style.bottom = covered > 40 ? `${covered + 12}px` : '';
+    };
+    vv.addEventListener('resize', place);
+    vv.addEventListener('scroll', place);
+  }
   // iPadOS soll Berührungen hier nicht als Geste deuten (Doppeltippen, Lupe,
   // Zoomen, Wischen) – sonst gehen bei schnellem Tippen Tasten verloren.
   // Die Pointer-Ereignisse für die Tasten kommen trotzdem.
@@ -222,6 +292,7 @@ function render() {
   const tool = (label, fn, cls = '', html = '') => { const b = h('button', { class: 'mk-tool ' + cls, type: 'button', text: label }); if (html) b.innerHTML = html; bindKey(b, fn); top.append(b); return b; };
   tool('', () => field && field.executeCommand('undo'), '', icon('undo', 'sm')).setAttribute('aria-label', 'Rückgängig');
   tool('', () => field && field.executeCommand('redo'), '', icon('redo', 'sm')).setAttribute('aria-label', 'Wiederholen');
+  tool('Text', () => useSystemKeyboard(field), '', '').setAttribute('aria-label', 'Normale Tastatur');
   tool('Einklappen', () => { collapsed = true; save(); show(field); });
   tool('Fertig', () => {
     const ed = window.heftApp && window.heftApp.editor;
@@ -247,7 +318,8 @@ function render() {
 function show(mf) {
   field = mf || field;
   if (!panel) build();
-  if (collapsed) {
+  // Eingeklappt (Hardware-Tastatur) oder gerade die normale Tastatur: nur der Knopf zum Zurückholen
+  if (collapsed || (sysField && sysField === field)) {
     panel.classList.remove('open');
     showBtn.classList.add('open');
     document.body.classList.remove('mathkbd-open');
