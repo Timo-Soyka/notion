@@ -119,18 +119,23 @@ function sinkOf(mf) { return mf && mf.shadowRoot && mf.shadowRoot.querySelector(
 // Einheiten-Erkennung, Kürzel).
 let textBar = null;
 
-// Text für \text{…}: Zeichen mit Sonderbedeutung entschärfen
+// Text für \text{…}: Zeichen mit Sonderbedeutung als Textbefehle (die übersteht
+// MathLive unverändert; \^{} würde zum Akzent, \$ bräche Formeln im Text)
+const TEXT_ESC = { '\\': '\\textbackslash{}', '^': '\\textasciicircum{}', '~': '\\textasciitilde{}', '$': '\\textdollar{}' };
 function escapeText(s) {
-  return s.replace(/\\/g, '∖').replace(/([{}$%#&_])/g, '\\$1').replace(/\^/g, '\\^{}').replace(/~/g, '\\~{}');
+  return s.replace(/[\\{}$%#&_^~]/g, c => TEXT_ESC[c] || '\\' + c);
 }
 
 function openTextBar(mf) {
   if (!mf || !mf.isConnected) return;
   closeTextBar(false);
+  // Halb getippten \-Befehl erst abschließen, sonst ginge er verloren
+  if (mf.mode === 'latex') { mf.executeCommand(['complete', 'accept-all']); changed(mf); }
   const sel = mf.selection;   // Einfügemarke merken – das Feld verliert gleich den Fokus
   const input = h('input', {
     class: 'mk-text-input', type: 'text', placeholder: 'Text für die Formel – z. B. für alle oder Meter',
-    autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Text für die Formel'
+    autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false',
+    enterkeyhint: 'done', 'aria-label': 'Text für die Formel'
   });
   const ok = h('button', { class: 'btn primary', type: 'button' }, 'Einfügen');
   const cancel = h('button', { class: 'btn outline', type: 'button' }, 'Abbrechen');
@@ -138,7 +143,8 @@ function openTextBar(mf) {
   const finish = (insert, back = true) => {
     if (!textBar || textBar.bar !== bar) return;
     textBar = null;
-    document.removeEventListener('pointerdown', outside, true);
+    window.removeEventListener('pointerdown', outsideDown, true);
+    window.removeEventListener('pointerup', outsideUp, true);
     const txt = input.value.trim();
     bar.remove();
     if (!mf.isConnected) return;
@@ -152,8 +158,16 @@ function openTextBar(mf) {
     if (back) mf.focus();
   };
   // Woanders hingetippt: Geschriebenes trotzdem übernehmen – vor allem anderen,
-  // sonst ist die Formel womöglich schon geschlossen
-  const outside = (e) => { if (!bar.contains(e.target)) finish(true, false); };
+  // sonst ist die Formel womöglich schon geschlossen. Nur beim echten Antippen,
+  // nicht beim Wischen (Scrollen) oder durch einen aufliegenden Handballen.
+  let down = null;
+  const outsideDown = (e) => { down = bar.contains(e.target) ? null : { id: e.pointerId, x: e.clientX, y: e.clientY, at: performance.now() }; };
+  const outsideUp = (e) => {
+    const d = down;
+    down = null;
+    if (!d || e.pointerId !== d.id || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10 || performance.now() - d.at > 600) return;
+    finish(true, false);
+  };
   for (const b of [ok, cancel]) b.addEventListener('pointerdown', (e) => e.preventDefault());
   ok.addEventListener('click', () => finish(true));
   cancel.addEventListener('click', () => finish(false));
@@ -163,7 +177,8 @@ function openTextBar(mf) {
   });
   document.body.append(bar);
   textBar = { bar, finish };
-  document.addEventListener('pointerdown', outside, true);
+  window.addEventListener('pointerdown', outsideDown, true);
+  window.addEventListener('pointerup', outsideUp, true);
   // Tastatur ausdrücklich erlauben – auch wenn „Text“ mit dem Pencil getippt wurde
   call('keyboard.allow').catch(() => { /* nur in der iPad-App */ });
   input.focus();
@@ -296,17 +311,19 @@ function render() {
   if (!panel) build();
   panel.innerHTML = '';
   const top = h('div', { class: 'mk-top' });
+  // Reiter dürfen seitlich scrollen (iPad mini hochkant) – „Fertig“ bleibt immer sichtbar
+  const tabs = h('div', { class: 'mk-tabs' });
   for (const L of LAYERS) {
     const tab = h('button', { class: 'mk-tab' + (L.id === layer ? ' on' : ''), type: 'button', text: L.label });
     bindKey(tab, () => { layer = L.id; shift = false; render(); });
-    top.append(tab);
+    tabs.append(tab);
   }
-  top.append(h('span', { class: 'grow' }));
+  top.append(tabs);
   const tool = (label, fn, cls = '', html = '') => { const b = h('button', { class: 'mk-tool ' + cls, type: 'button', text: label }); if (html) b.innerHTML = html; bindKey(b, fn); top.append(b); return b; };
   tool('', () => field && field.executeCommand('undo'), '', icon('undo', 'sm')).setAttribute('aria-label', 'Rückgängig');
   tool('', () => field && field.executeCommand('redo'), '', icon('redo', 'sm')).setAttribute('aria-label', 'Wiederholen');
   tool('Text', () => openTextBar(field), '', '').setAttribute('aria-label', 'Normale Tastatur');
-  tool('Einklappen', () => { collapsed = true; save(); show(field); });
+  tool('', () => { collapsed = true; save(); show(field); }, '', icon('chevronDown', 'sm')).setAttribute('aria-label', 'Einklappen');
   tool('Fertig', () => {
     const ed = window.heftApp && window.heftApp.editor;
     if (ed && ed.activeAtom) ed.deactivate();

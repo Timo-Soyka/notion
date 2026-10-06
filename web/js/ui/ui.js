@@ -87,6 +87,8 @@ export function popover(anchor, content, opts = {}) {
     onDown(t.e);
   };
   const onKey = (e) => {
+    // Escape im Textfeld der Mathe-Tastatur gilt dem Textfeld, nicht dem Formel-Fenster
+    if (e.target && e.target.closest && e.target.closest('.math-kbd-text')) return;
     if (e.key === 'Escape' && openPopovers[openPopovers.length - 1] === api) {
       e.preventDefault();
       e.stopPropagation();

@@ -268,11 +268,17 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
         // ---------------- PDF ----------------
 
         case "pdf.open":
-            DispatchQueue.main.async {
-                do {
-                    let pages = try self.host?.openPDF(uuid: s("uuid"), rect: Self.rect(a["rect"])) ?? 0
-                    reply(.success(["ok": true, "pages": pages]))
-                } catch { reply(.success(["ok": false, "reason": error.localizedDescription])) }
+            let uuid = s("uuid"), rect = Self.rect(a["rect"])
+            // Erst (im Hintergrund) einen neueren Stand aus iCloud abwarten – sonst würde
+            // ein veraltetes Blatt bearbeitet und über das neuere gespeichert
+            work.async {
+                self.store.prepareFile(uuid)
+                DispatchQueue.main.async {
+                    do {
+                        let pages = try self.host?.openPDF(uuid: uuid, rect: rect) ?? 0
+                        reply(.success(["ok": true, "pages": pages]))
+                    } catch { reply(.success(["ok": false, "reason": error.localizedDescription])) }
+                }
             }
 
         case "pdf.close":

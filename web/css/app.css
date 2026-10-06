@@ -456,6 +456,10 @@ html.ipad .atom-view, html.ipad .math-view, html.ipad .img-frame, html.ipad .blk
 .math-kbd.open { display: block; }
 .mk-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .mk-top .grow { flex: 1; }
+.mk-tabs { flex: 1; min-width: 0; display: flex; gap: 6px; overflow: hidden; }
+.mk-tab, .mk-tool { flex: none; }
+/* iPad mini hochkant, Split View: enger, damit alle Reiter und „Fertig“ Platz haben */
+@media (max-width: 860px) { .mk-tab, .mk-tool { padding: 7px 7px; font-size: 13.5px; } .mk-top, .mk-tabs { gap: 2px; } }
 .mk-tab, .mk-tool { border: 0; border-radius: 8px; padding: 7px 14px; font: 15px var(--font-ui); background: transparent; color: var(--mk-fg); }
 .mk-tab.on { background: var(--mk-key); font-weight: 600; box-shadow: 0 1px 0 rgba(0,0,0,.25); }
 .mk-tool.done { background: var(--accent); color: #fff; font-weight: 600; }

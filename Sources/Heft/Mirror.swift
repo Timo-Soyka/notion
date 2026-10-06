@@ -160,15 +160,18 @@ final class Mirror {
     /// Auftrag gesichert – wird Heft mitten im Durchgang beendet, ist nichts verloren
     private var localURL: URL { Store.shared.supportDir.appendingPathComponent("ipad-abgleich.json") }
 
-    private func loadLocal() -> (aliases: [String: String], applied: [String], failed: [String: String]) {
+    private func loadLocal() -> (aliases: [String: String], applied: [String], failed: [String: String], inflight: String?) {
         guard let data = try? Data(contentsOf: localURL),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              (o["folder"] as? String) == root.path else { return ([:], [], [:]) }
-        return (o["aliases"] as? [String: String] ?? [:], o["applied"] as? [String] ?? [], o["failed"] as? [String: String] ?? [:])
+              (o["folder"] as? String) == root.path else { return ([:], [], [:], nil) }
+        return (o["aliases"] as? [String: String] ?? [:], o["applied"] as? [String] ?? [], o["failed"] as? [String: String] ?? [:], o["inflight"] as? String)
     }
 
-    private func saveLocal(_ aliases: [String: String], _ applied: [String], _ failed: [String: String]) {
-        let o: [String: Any] = ["folder": root.path, "aliases": aliases, "applied": applied, "failed": failed]
+    /// inflight: Auftrag, der gerade etwas anlegt. Endet Heft mitten darin, legt DEVONthink
+    /// den Datensatz womöglich trotzdem an – beim nächsten Mal erst nachsehen (retry)
+    private func saveLocal(_ aliases: [String: String], _ applied: [String], _ failed: [String: String], inflight: String? = nil) {
+        var o: [String: Any] = ["folder": root.path, "aliases": aliases, "applied": applied, "failed": failed]
+        if let inflight { o["inflight"] = inflight }
         if let d = try? JSONSerialization.data(withJSONObject: o) { try? d.write(to: localURL, options: .atomic) }
     }
 
@@ -206,6 +209,7 @@ final class Mirror {
         let present = Set(urls.map(\.lastPathComponent))
         firstSeen = firstSeen.filter { present.contains($0.key) }
         attempts = attempts.filter { present.contains($0.key) }
+        if let f = local.inflight, present.contains(f) { attempts[f] = max(1, attempts[f] ?? 0) }
         var transientError: Error?
         if !urls.isEmpty {
             // Datenbank wirklich offen? Sonst schlüge jeder Auftrag mit „Datensatz nicht
@@ -246,6 +250,7 @@ final class Mirror {
                 continue
             }
             do {
+                if (order["op"] as? String ?? "").hasPrefix("create-") { saveLocal(aliases, applied, failed, inflight: name) }
                 let note = try apply(order, retry: (attempts[name] ?? 0) > 0, files: &files, aliases: &aliases)
                 log.append(note)
                 applied.append(name)
@@ -294,6 +299,7 @@ final class Mirror {
         var unchanged = previous
         unchanged["generated"] = nil
         unchanged["changed"] = nil
+        unchanged["seq"] = nil
         let now = Date()
         let iso = ISO8601DateFormatter()
         let contentChanged = jsonString(unchanged) != jsonString(manifest)
@@ -302,6 +308,7 @@ final class Mirror {
             manifest["changed"] = contentChanged ? iso.string(from: now)
                 : (previous["changed"] as? String) ?? (previous["generated"] as? String) ?? iso.string(from: now)
             manifest["generated"] = iso.string(from: now)
+            manifest["seq"] = ((previous["seq"] as? Int) ?? 0) + 1
             try coordinatedWrite(try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]), to: manifestURL)
         }
         var shared = s
@@ -426,7 +433,10 @@ final class Mirror {
         // schon angelegt? Dann nicht ein zweites Mal
         let existing = { (parent: String, name: String, type: String, bundle: Bool) throws -> [String: Any]? in
             guard retry else { return nil }
-            return try self.dt.run(Self.findRecent, [parent, name, type, bundle ? "1" : "0"]) as? [String: Any]
+            // Datensätze, die schon zu einem anderen Auftrag gehören, kommen nicht in Frage
+            // (map: Stand vor diesem Auftrag – das inout-aliases darf die Closure nicht festhalten)
+            let taken = self.jsonString(Array(Set(map.values)))
+            return try self.dt.run(Self.findRecent, [parent, name, type, bundle ? "1" : "0", taken]) as? [String: Any]
         }
         let fixLinks = { (md: String) -> String in
             var out = md
@@ -463,16 +473,23 @@ final class Mirror {
         case "create-note":
             let parent = resolve(o["parent"] as? String)
             let name = o["name"] as? String ?? "Unbenannt"
-            if let r = try existing(parent, name, "markdown", (o["bundle"] as? Bool) == true), let real = r["uuid"] as? String {
-                if let tmpId = o["tempId"] as? String { aliases[tmpId] = real }
-                if let g = r["group"] as? String, let tmpGroup = o["tempGroup"] as? String { aliases[tmpGroup] = g }
-                return "Schon angelegt: \(name)"
+            var bundle = (o["bundle"] as? Bool) == true
+            var into = parent
+            if let r = try existing(parent, name, "markdown", bundle) {
+                if let real = r["uuid"] as? String {
+                    if let tmpId = o["tempId"] as? String { aliases[tmpId] = real }
+                    if let g = r["group"] as? String, let tmpGroup = o["tempGroup"] as? String { aliases[tmpGroup] = g }
+                    return "Schon angelegt: \(name)"
+                }
+                // Eintrags-Ordner steht schon, der Eintrag darin fehlt noch: nur ihn anlegen
+                if let g = r["group"] as? String { into = g; bundle = false }
             }
             let md = fixLinks(String(decoding: try content(), as: UTF8.self))
             let tmp = Store.shared.tempFile("neu.md")
             try md.write(to: tmp, atomically: true, encoding: .utf8)
             defer { try? fm.removeItem(at: tmp) }
-            let r = try dt.run(Scripts.createNote, [parent, name, tmp.path, (o["bundle"] as? Bool) == true ? "1" : "0"]) as? [String: Any]
+            var r = try dt.run(Scripts.createNote, [into, name, tmp.path, bundle ? "1" : "0"]) as? [String: Any]
+            if into != parent { r?["group"] = into }
             if let tmpId = o["tempId"] as? String, let real = r?["uuid"] as? String {
                 aliases[tmpId] = real
                 if let g = r?["group"] as? String, let tmpGroup = o["tempGroup"] as? String { aliases[tmpGroup] = g }
@@ -482,16 +499,21 @@ final class Mirror {
         case "create-file":
             let parent = resolve(o["parent"] as? String)
             let name = o["name"] as? String ?? "Datei"
-            if let r = try existing(parent, name, "", false), let real = r["uuid"] as? String {
+            if let r = try existing(parent, name, "file", false), let real = r["uuid"] as? String {
                 if let tmpId = o["tempId"] as? String { aliases[tmpId] = real }
                 dropAttachment(of: o)
                 return "Schon angelegt: \(name)"
             }
             let data = try content()
             let ext = ((o["attachment"] as? String ?? "") as NSString).pathExtension
-            let tmp = Store.shared.tempFile("\(name)\(ext.isEmpty ? "" : "." + ext)")
+            // Datei trägt gleich den richtigen Namen – auch wenn das Umbenennen nach dem
+            // Import (Zeitüberschreitung) nicht mehr ankommt, findet ein zweiter Versuch sie
+            let dir = Store.shared.tempFile("import")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: dir) }
+            let safe = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            let tmp = dir.appendingPathComponent("\(safe)\(ext.isEmpty ? "" : "." + ext)")
             try data.write(to: tmp)
-            defer { try? fm.removeItem(at: tmp) }
             let r = try dt.run(Scripts.importInto, [parent, tmp.path, name]) as? [String: Any]
             if let tmpId = o["tempId"] as? String, let real = r?["uuid"] as? String { aliases[tmpId] = real }
             dropAttachment(of: o)
@@ -546,22 +568,27 @@ final class Mirror {
     /// bundle = "1": Eintrags-Ordner mit gleichnamigem Eintrag darin
     private static let findRecent = #"""
     function main(argv) {
-      const [parent, name, type, bundle] = argv;
+      const [parent, name, type, bundle, takenJSON] = argv;
+      const taken = new Set(JSON.parse(takenJSON || '[]'));
       const g = rec(parent);
       const kids = g.children;
       const n = kids.name(), u = kids.uuid(), t = kids.recordType();
       let c = []; try { c = kids.creationDate(); } catch (e) {}
       const now = Date.now();
       for (let i = n.length - 1; i >= 0; i--) {
-        if (n[i] !== name) continue;
+        if (n[i] !== name || taken.has(u[i])) continue;
         if (c[i] && now - c[i].getTime() > 3600 * 1000) continue;
         if (bundle === '1') {
           if (t[i] !== 'group') continue;
           const md = noteInBundle(rec(u[i]));
-          if (md) return { uuid: md.uuid(), group: u[i] };
+          if (md && !taken.has(md.uuid())) return { uuid: md.uuid(), group: u[i] };
+          // Ordner ohne Eintrag: Der erste Versuch kam nur bis zum Ordner
+          if (!md) return { group: u[i] };
           continue;
         }
-        if (type && t[i] !== type) continue;
+        // type "file": irgendeine Datei (Bild, PDF …), aber kein Ordner und kein Eintrag
+        if (type === 'file' && (t[i] === 'group' || t[i] === 'markdown')) continue;
+        if (type && type !== 'file' && t[i] !== type) continue;
         return { uuid: u[i], group: g.uuid() };
       }
       return null;

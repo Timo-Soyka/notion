@@ -42,7 +42,8 @@ final class MirrorStore {
         var created: Date
         var hash: String?         // Prüfsumme des Inhalts – daran sieht man, wann die Kopie ihn enthält
         var applied: Bool?        // vom Mac eingetragen
-        var failed: Bool?         // vom Mac abgelehnt – eigene Fassung bleibt einen Tag lang sichtbar
+        var failed: Bool?         // vom Mac abgelehnt – eigene Fassung bleibt sichtbar …
+        var base: String?         // … solange die Kopie vom Mac noch diesen Stand hat (höchstens einen Tag)
     }
 
     struct PadState: Codable {
@@ -173,10 +174,7 @@ final class MirrorStore {
             if let data, let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
                 lock.lock()
                 manifestStamp = stamp
-                let newGen = obj["generated"] as? String ?? ""
-                let oldGen = manifest["generated"] as? String ?? ""
-                // Nie auf einen älteren Stand zurückfallen (ISO-Zeitpunkte lassen sich als Text vergleichen)
-                if newGen > oldGen || manifest.isEmpty {
+                if manifest.isEmpty || Self.isNewer(obj, than: manifest) {
                     let oldFiles = files
                     let contentChanged = Self.changeMark(obj) != Self.changeMark(manifest)
                     manifest = obj
@@ -198,6 +196,17 @@ final class MirrorStore {
         }
         if settle() { up.treeChanged = true }
         return up
+    }
+
+    /// Ist dieses Verzeichnis neuer als das bekannte? Nie auf einen älteren Stand
+    /// zurückfallen (iCloud liefert gelegentlich einen alten nach) – aber einem Mac,
+    /// dessen Uhr zurückgestellt wurde, trotzdem folgen: Er zählt jedes Verzeichnis
+    /// hoch („seq“), ältere Fassungen kennen nur den Zeitpunkt.
+    private static func isNewer(_ a: [String: Any], than b: [String: Any]) -> Bool {
+        let ga = a["generated"] as? String ?? "", gb = b["generated"] as? String ?? ""
+        let sa = (a["seq"] as? Int) ?? 0, sb = (b["seq"] as? Int) ?? 0
+        if sa != sb { return sa > sb || ga > gb }
+        return ga > gb
     }
 
     /// Zeitpunkt der letzten inhaltlichen Änderung (ältere Verzeichnisse kennen nur „generated“)
@@ -236,6 +245,8 @@ final class MirrorStore {
             changed = true
             if let msg = failed[p.id] {
                 state.pending[i].failed = true
+                let target = p.uuid.map { aliasMap[$0] ?? $0 } ?? ""
+                state.pending[i].base = files[target]?["hash"] as? String
                 let what = p.name.map { "„\($0)“" } ?? "Eine Änderung"
                 failures.append("\(what): \(msg)")
             }
@@ -256,13 +267,21 @@ final class MirrorStore {
         let real = { (id: String?) -> String? in id.map { al[$0] ?? $0 } }
         var drop = Set<String>()                          // Auftragsnamen
         var check: [(id: String, info: [String: Any], hash: String, note: Bool, target: String)] = []
+        var staleFailed = Set<String>()                   // abgelehnte Fassungen, die nun dem Mac weichen
         let now = Date()
         for (i, p) in state.pending.enumerated() where p.applied == true {
             guard p.markdown != nil || p.localFile != nil, let target = real(p.uuid) else { drop.insert(p.id); continue }
             // Eine neuere eigene Fassung desselben Eintrags zeigt ohnehin die
             if state.pending[(i + 1)...].contains(where: { real($0.uuid) == target && ($0.markdown != nil || $0.localFile != nil) }) { drop.insert(p.id); continue }
             // Vom Mac abgelehnt: eigene Fassung noch einen Tag zeigen (zum Abschreiben)
-            if p.failed == true { if now.timeIntervalSince(p.created) > 86_400 { drop.insert(p.id) }; continue }
+            // … aber nur, solange der Mac den Eintrag nicht inzwischen selbst geändert hat
+            if p.failed == true {
+                if now.timeIntervalSince(p.created) > 86_400 || (fs[target]?["hash"] as? String) != p.base {
+                    drop.insert(p.id)
+                    staleFailed.insert(target)
+                }
+                continue
+            }
             guard let info = fs[target], let want = info["hash"] as? String else {
                 // Mac kennt den Eintrag nicht (mehr) – nicht ewig festhalten
                 if now.timeIntervalSince(p.created) > 600 { drop.insert(p.id) }
@@ -274,7 +293,7 @@ final class MirrorStore {
 
         // 2. Ohne Sperre: Hat die Kopie auf diesem iPad den Stand, den das Verzeichnis nennt?
         //    (Egal ob es die eigene Fassung ist oder eine neuere vom Mac)
-        var reload = Set<String>()
+        var reload = staleFailed
         for c in check where mirrorHas(c.info, hash: c.hash, note: c.note) {
             drop.insert(c.id)
             reload.insert(c.target)
@@ -567,6 +586,12 @@ final class MirrorStore {
         let url = root.appendingPathComponent(rel)
         try? fm.startDownloadingUbiquitousItem(at: url)
         return url
+    }
+
+    /// Vor dem Öffnen (nicht auf dem Hauptthread): einen gerade geänderten Stand aus iCloud abwarten
+    func prepareFile(_ id: String) {
+        guard let url = fileURL(for: id), !url.path.hasPrefix(localDir.path) else { return }
+        waitUntilCurrent(url, timeout: 3)
     }
 
     func fileData(for id: String) -> Data? {
