@@ -1561,7 +1561,7 @@ export class Editor {
     const outside = (e) => {
       if (!this.activeAtom) return;
       const el = this.elOf(this.activeAtom);
-      if (el && !el.contains(e.target) && !e.target.closest('.popover, .overlay, .tooltip, .math-kbd, .math-kbd-show')) this.deactivate();
+      if (el && !el.contains(e.target) && !e.target.closest('.popover, .overlay, .tooltip, .math-kbd, .math-kbd-show, .math-kbd-text')) this.deactivate();
     };
     document.addEventListener('mousedown', outside, true);
     const selKey = (e) => this.onDocumentKey(e);

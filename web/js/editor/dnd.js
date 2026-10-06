@@ -195,6 +195,7 @@ export function attachDnd(ed) {
     const mine = (ev) => !touch || ev.pointerId === touch.id;
     const move = (ev) => {
       if (!mine(ev)) return;
+      gesture.last = performance.now();
       if (touch) ev.preventDefault();
       if (!started) {
         if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < (touch ? 6 : 4)) return;
@@ -263,7 +264,9 @@ export function attachDnd(ed) {
     };
     const up = (ev) => finish(ev, false);
     const cancel = (ev) => finish(ev, true);
-    const gesture = { abort: end };
+    // Art des Zeigers: Eine neue Berührung beendet nur eine Geste derselben Art
+    // (ein aufliegender Handballen bricht das Ziehen mit dem Pencil nicht ab)
+    const gesture = { abort: end, type: touch ? touch.type : 'mouse', last: performance.now() };
     active = gesture;
     if (touch) {
       window.addEventListener('pointermove', move, { capture: true, passive: false });
@@ -296,9 +299,11 @@ export function attachDnd(ed) {
   };
   d.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' || !e.isPrimary || ed.readonly) return;
-    // Eine neue erste Berührung heißt: alle früheren Finger sind oben. Ist noch
-    // eine Geste offen, ist ihr Ende verloren gegangen – jetzt aufräumen.
-    if (active) active.abort();
+    // Eine neue erste Berührung derselben Art heißt: alle früheren sind oben. Ist
+    // noch eine Geste offen, ist ihr Ende verloren gegangen – jetzt aufräumen.
+    // (isPrimary gilt je Zeigerart: Finger/Handballen neben dem Pencil nicht stören lassen)
+    // Eine andere Art, die sich länger nicht mehr gerührt hat, ist ebenfalls hängengeblieben.
+    if (active) { if (active.type === e.pointerType || performance.now() - active.last > 1500) active.abort(); else return; }
     // Ein Griff, der zu einem gelöschten Block gehört, zählt nicht
     if (hoverBlock && !ed.byId.has(hoverBlock.id)) { hoverBlock = null; handle.classList.remove('show'); }
     const b = gripTarget(e);
@@ -316,7 +321,7 @@ export function attachDnd(ed) {
     // Alle weiteren Ereignisse dieser Berührung hierher – auch wenn das berührte
     // Element unterwegs neu gezeichnet wird
     try { d.setPointerCapture(e.pointerId); } catch { /* egal */ }
-    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen });
+    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen, type: e.pointerType });
   }, true);
   // Solange der Griff gehalten wird: kein Scrollen, keine Handschrift-Erkennung
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });

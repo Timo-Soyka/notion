@@ -482,5 +482,16 @@ html.ipad .atom-view, html.ipad .math-view, html.ipad .img-frame, html.ipad .blk
   touch-action: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
 }
 .math-kbd-show.open { display: block; }
+/* „Text“: eigenes Eingabefeld mit der normalen Tastatur – oben, dort verdeckt sie es nicht */
+.math-kbd-text {
+  position: fixed; left: 50%; top: calc(56px + env(safe-area-inset-top)); transform: translateX(-50%); z-index: 2600;
+  display: flex; align-items: center; gap: 8px; width: min(720px, calc(100vw - 32px)); box-sizing: border-box;
+  padding: 10px 12px; background: var(--popover); border-radius: 12px; box-shadow: var(--shadow-pop); font-family: var(--font-ui);
+}
+.mk-text-label { flex: none; font-weight: 600; font-size: 14px; color: var(--muted); }
+.mk-text-input {
+  flex: 1; min-width: 0; font: 18px var(--font-ui); padding: 9px 12px; border: 1.5px solid var(--accent); border-radius: 8px;
+  background: var(--bg); color: var(--fg); outline: none;
+}
 /* Platz unter dem Eintrag, damit die Formel über der Tastatur bleibt */
 body.mathkbd-open .view { padding-bottom: calc(var(--mk-h, 300px) + 40px); }

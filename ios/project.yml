@@ -31,7 +31,7 @@ targets:
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "Heft fotografiert Tafelbilder und Arbeitsblätter für deine Einträge."
         INFOPLIST_KEY_UIStatusBarHidden: NO
-        MARKETING_VERSION: "1.16"
-        CURRENT_PROJECT_VERSION: "17"
+        MARKETING_VERSION: "1.17"
+        CURRENT_PROJECT_VERSION: "18"
         SWIFT_VERSION: "5.0"
         ENABLE_PREVIEWS: NO

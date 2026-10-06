@@ -521,6 +521,7 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// mindestens alle zehn Minuten; bleibt das aus, läuft Heft dort wohl nicht
     private func syncLabel() -> String {
         var parts = ["iCloud"]
+        if store.macOutdated { parts.append("Heft am Mac ist noch eine ältere Version – bitte dort aktualisieren") }
         if let g = store.lastSync, let date = ISO8601DateFormatter().date(from: g) {
             let f = RelativeDateTimeFormatter()
             f.locale = Locale(identifier: "de_DE")

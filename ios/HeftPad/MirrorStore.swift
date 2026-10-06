@@ -42,6 +42,7 @@ final class MirrorStore {
         var created: Date
         var hash: String?         // Prüfsumme des Inhalts – daran sieht man, wann die Kopie ihn enthält
         var applied: Bool?        // vom Mac eingetragen
+        var failed: Bool?         // vom Mac abgelehnt – eigene Fassung bleibt einen Tag lang sichtbar
     }
 
     struct PadState: Codable {
@@ -150,8 +151,11 @@ final class MirrorStore {
 
     /// Heft.json neu lesen, erledigte Aufträge abhaken. Geänderte Einträge und
     /// Fehler sammelt takeNews(); hier nur: hat sich der Baum geändert?
+    /// Immer nur einer zugleich (Zeitgeber, iCloud-Meldung und Oberfläche rufen das)
+    private let reloading = NSLock()
     @discardableResult
     func reloadManifest() -> Update {
+        reloading.lock(); defer { reloading.unlock() }
         guard let root else { return Update() }
         let url = root.appendingPathComponent("Heft.json")
         try? fm.startDownloadingUbiquitousItem(at: url)
@@ -160,21 +164,31 @@ final class MirrorStore {
         var u = url
         u.removeAllCachedResourceValues()
         let stamp = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        if stamp == nil || stamp != manifestStamp || manifest.isEmpty {
+        lock.lock()
+        let needsRead = stamp == nil || stamp != manifestStamp || manifest.isEmpty
+        lock.unlock()
+        if needsRead {
             var data: Data?
             coordinateRead(url) { data = try? Data(contentsOf: $0) }
             if let data, let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
                 lock.lock()
                 manifestStamp = stamp
-                if Self.changeMark(obj) != Self.changeMark(manifest) || obj["generated"] as? String != manifest["generated"] as? String {
+                let newGen = obj["generated"] as? String ?? ""
+                let oldGen = manifest["generated"] as? String ?? ""
+                // Nie auf einen älteren Stand zurückfallen (ISO-Zeitpunkte lassen sich als Text vergleichen)
+                if newGen > oldGen || manifest.isEmpty {
                     let oldFiles = files
                     let contentChanged = Self.changeMark(obj) != Self.changeMark(manifest)
                     manifest = obj
                     if contentChanged {
                         up.treeChanged = true
-                        // Einträge mit neuem Inhalt (offene laden neu, wenn sie dort unverändert sind)
+                        // Einträge mit neuem Inhalt (offene laden neu, wenn sie dort unverändert sind) –
+                        // auch unter ihrer vorläufigen Kennung, falls sie auf dem iPad angelegt wurden
+                        let al = aliasMap
                         for (uuid, info) in files where (info["kind"] as? String) == "note" {
-                            if let old = oldFiles[uuid], (old["hash"] as? String) != (info["hash"] as? String) { newsNotes.insert(uuid) }
+                            guard let old = oldFiles[uuid], (old["hash"] as? String) != (info["hash"] as? String) else { continue }
+                            newsNotes.insert(uuid)
+                            for (tmp, real) in al where real == uuid { newsNotes.insert(tmp) }
                         }
                     }
                     newsFailures += markApplied()
@@ -182,9 +196,7 @@ final class MirrorStore {
                 lock.unlock()
             }
         }
-        lock.lock()
         if settle() { up.treeChanged = true }
-        lock.unlock()
         return up
     }
 
@@ -201,6 +213,8 @@ final class MirrorStore {
 
     var lastSync: String? { lock.lock(); defer { lock.unlock() }; return manifest["generated"] as? String }
     var macName: String? { lock.lock(); defer { lock.unlock() }; return manifest["mac"] as? String }
+    /// Heft am Mac noch auf dem alten Stand (vor 1.16)? Dann kämen wieder Konfliktkopien
+    var macOutdated: Bool { lock.lock(); defer { lock.unlock() }; return !manifest.isEmpty && ((manifest["version"] as? Int) ?? 1) < 2 }
     var pendingCount: Int { lock.lock(); defer { lock.unlock() }; return state.pending.filter { $0.applied != true }.count }
 
     /// Aufträge abhaken, die der Mac eingetragen hat; gibt die gescheiterten zurück
@@ -221,6 +235,7 @@ final class MirrorStore {
             state.pending[i].applied = true
             changed = true
             if let msg = failed[p.id] {
+                state.pending[i].failed = true
                 let what = p.name.map { "„\($0)“" } ?? "Eine Änderung"
                 failures.append("\(what): \(msg)")
             }
@@ -229,29 +244,58 @@ final class MirrorStore {
         return failures
     }
 
-    /// Erledigte Aufträge vergessen – Inhalte erst, wenn die Kopie in iCloud sie
-    /// wirklich enthält (sonst zeigte das iPad kurz den alten Stand)
+    /// Erledigte Aufträge vergessen – eigene Inhalte erst, wenn die Kopie in iCloud
+    /// wirklich den Stand vom Mac enthält (sonst zeigte das iPad kurz den alten Stand
+    /// und speicherte ihn womöglich wieder). Dateien werden ohne Sperre geprüft.
     @discardableResult
     private func settle() -> Bool {
+        // 1. Unter der Sperre: was ist zu entscheiden?
+        lock.lock()
         let al = aliasMap
         let fs = files
         let real = { (id: String?) -> String? in id.map { al[$0] ?? $0 } }
-        var drop = Set<Int>()
+        var drop = Set<String>()                          // Auftragsnamen
+        var check: [(id: String, info: [String: Any], hash: String, note: Bool, target: String)] = []
+        let now = Date()
         for (i, p) in state.pending.enumerated() where p.applied == true {
-            guard p.markdown != nil || p.localFile != nil, let target = real(p.uuid) else { drop.insert(i); continue }
+            guard p.markdown != nil || p.localFile != nil, let target = real(p.uuid) else { drop.insert(p.id); continue }
             // Eine neuere eigene Fassung desselben Eintrags zeigt ohnehin die
-            if state.pending[(i + 1)...].contains(where: { real($0.uuid) == target && ($0.markdown != nil || $0.localFile != nil) }) { drop.insert(i); continue }
+            if state.pending[(i + 1)...].contains(where: { real($0.uuid) == target && ($0.markdown != nil || $0.localFile != nil) }) { drop.insert(p.id); continue }
+            // Vom Mac abgelehnt: eigene Fassung noch einen Tag zeigen (zum Abschreiben)
+            if p.failed == true { if now.timeIntervalSince(p.created) > 86_400 { drop.insert(p.id) }; continue }
             guard let info = fs[target], let want = info["hash"] as? String else {
                 // Mac kennt den Eintrag nicht (mehr) – nicht ewig festhalten
-                if Date().timeIntervalSince(p.created) > 600 { drop.insert(i) }
+                if now.timeIntervalSince(p.created) > 600 { drop.insert(p.id) }
                 continue
             }
-            // Mac hat inzwischen etwas anderes gespeichert: dessen Fassung gilt
-            if want != p.hash { drop.insert(i); continue }
-            if mirrorHas(info, hash: want, note: p.markdown != nil) { drop.insert(i) }
+            check.append((p.id, info, want, p.markdown != nil, target))
+        }
+        lock.unlock()
+
+        // 2. Ohne Sperre: Hat die Kopie auf diesem iPad den Stand, den das Verzeichnis nennt?
+        //    (Egal ob es die eigene Fassung ist oder eine neuere vom Mac)
+        var reload = Set<String>()
+        for c in check where mirrorHas(c.info, hash: c.hash, note: c.note) {
+            drop.insert(c.id)
+            reload.insert(c.target)
         }
         guard !drop.isEmpty else { return false }
-        for i in drop.sorted(by: >) { deleteLocal(state.pending.remove(at: i).localFile) }
+
+        // 3. Unter der Sperre: vergessen (die Liste kann sich inzwischen geändert haben)
+        lock.lock()
+        defer { lock.unlock() }
+        var gone: [Pending] = []
+        state.pending.removeAll { p in
+            guard drop.contains(p.id) else { return false }
+            gone.append(p)
+            return true
+        }
+        for p in gone { deleteLocal(p.localFile) }
+        // Offene Einträge laden dann den Stand der Kopie (nur wenn er sich vom eigenen unterscheidet)
+        for t in reload {
+            newsNotes.insert(t)
+            for (tmp, r) in aliasMap where r == t { newsNotes.insert(tmp) }
+        }
         saveState()
         return true
     }
@@ -527,8 +571,9 @@ final class MirrorStore {
 
     func fileData(for id: String) -> Data? {
         guard let url = fileURL(for: id) else { return nil }
-        // Kopie vom Mac: einen gerade geänderten Stand kurz abwarten
-        if url.path.hasPrefix(localDir.path) == false { waitUntilCurrent(url, timeout: 3) }
+        // Kopie vom Mac: einen gerade geänderten Stand kurz abwarten – nie auf dem
+        // Hauptthread (z. B. beim Öffnen eines Arbeitsblatts), die Oberfläche stünde sonst
+        if !Thread.isMainThread && !url.path.hasPrefix(localDir.path) { waitUntilCurrent(url, timeout: 3) }
         var out: Data?
         coordinateRead(url) { out = try? Data(contentsOf: $0) }
         return out
