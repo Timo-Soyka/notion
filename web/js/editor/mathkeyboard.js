@@ -32,7 +32,7 @@ const LAYERS = [
       [ins('sin', '\\sin(#?)', { t: '\\sin' }), ins('cos', '\\cos(#?)', { t: '\\cos' }), ins('tan', '\\tan(#?)', { t: '\\tan' }), ins('sin⁻¹', '\\sin^{-1}(#?)', { t: '\\sin^{-1}' }), ins('cos⁻¹', '\\cos^{-1}(#?)', { t: '\\cos^{-1}' }), ins('tan⁻¹', '\\tan^{-1}(#?)', { t: '\\tan^{-1}' }), ins('ln', '\\ln(#?)', { t: '\\ln' }), ins('log', `\\log_{${P}}(${P})`, { t: '\\log_{\\square}' }), ins('lg', '\\lg(#?)', { t: '\\lg' }), ins('eˣ', `\\mathrm{e}^{${P}}`, { t: '\\mathrm{e}^{\\square}' })],
       [ins('f(x)', 'f(x)', { t: 'f(x)' }), ins("f'(x)", "f^{\\prime}(x)", { t: "f'(x)" }), ins("f''(x)", "f^{\\prime\\prime}(x)", { t: "f''(x)" }), ins('d/dx', `\\frac{\\mathrm{d}}{\\mathrm{d}x}`, { t: '\\frac{\\mathrm{d}}{\\mathrm{d}x}' }), ins('∫ₐᵇ', `\\int_{${P}}^{${P}}${P}\\,\\mathrm{d}x`, { t: '\\int_a^b' }), ins('∫', `\\int ${P}\\,\\mathrm{d}x`, { t: '\\int' }), ins('[F]ₐᵇ', `\\left[${P}\\right]_{${P}}^{${P}}`, { t: '\\left[F\\right]_a^b' }), ins('lim', `\\lim_{${P}\\to ${P}}`, { t: '\\lim' }), ins('→', '\\to ', { t: '\\to' }), ins('n!', '#@!', { t: 'n!' })],
       [ins('Σ', `\\sum_{${P}}^{${P}}`, { t: '\\sum' }), ins('Π', `\\prod_{${P}}^{${P}}`, { t: '\\prod' }), ins('(ⁿₖ)', `\\binom{${P}}{${P}}`, { t: '\\binom{n}{k}' }), ins('[a;b]', `\\left[${P};${P}\\right]`, { t: '[a;b]' }), ins(']a;b[', `\\left]${P};${P}\\right[`, { t: ']a;b[' }), ins('∈', '\\in ', { t: '\\in' }), ins('∉', '\\notin ', { t: '\\notin' }), ins('ℝ', '\\mathbb{R}', { t: '\\mathbb{R}' }), ins('ℕ', '\\mathbb{N}', { t: '\\mathbb{N}' }), ins('ℤ', '\\mathbb{Z}', { t: '\\mathbb{Z}' })],
-      [ins('ℚ', '\\mathbb{Q}', { t: '\\mathbb{Q}' }), ins('⇒', '\\Rightarrow ', { t: '\\Rightarrow' }), ins('⇔', '\\Leftrightarrow ', { t: '\\Leftrightarrow' }), ins('{ }', `\\left\\{${P}\\right\\}`, { t: '\\{\\square\\}' }), ins('∪', '\\cup ', { t: '\\cup' }), ins('∩', '\\cap ', { t: '\\cap' }), ins('∅', '\\emptyset ', { t: '\\emptyset' }), ins('⃗v', `\\vec{${P}}`, { t: '\\vec{v}' }), ins('x̄', `\\overline{${P}}`, { t: '\\overline{x}' }), ins('Δ', '\\Delta ', { t: '\\Delta' })]
+      [ins('ℚ', '\\mathbb{Q}', { t: '\\mathbb{Q}' }), ins('⇒', '\\Rightarrow ', { t: '\\Rightarrow' }), ins('⇔', '\\Leftrightarrow ', { t: '\\Leftrightarrow' }), ins('{ }', `\\left\\{${P}\\right\\}`, { t: '\\{\\square\\}' }), ins('∪', '\\cup ', { t: '\\cup' }), ins('∩', '\\cap ', { t: '\\cap' }), ins('∅', '\\emptyset ', { t: '\\emptyset' }), ins('⃗v', `\\vec{${P}}`, { t: '\\vec{v}' }), ins('x̄', `\\overline{${P}}`, { t: '\\overline{x}' }), ins('\\', '\\setminus ', { t: '\\setminus' })]
     ]
   },
   {
@@ -48,7 +48,7 @@ const LAYERS = [
       'qwertzuiop'.split('').map(ch => typ(ch, ch, { c: 'var' })),
       'asdfghjkl'.split('').map(ch => typ(ch, ch, { c: 'var' })),
       [k('⇧', { act: 'shift', c: 'mod' }), ...'yxcvbnm'.split('').map(ch => typ(ch, ch, { c: 'var' })), k('Text', { act: 'text', c: 'mod' })],
-      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }')]
+      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }'), k('\\', { act: 'latex', c: 'mod' })]
     ]
   },
   {
@@ -115,6 +115,14 @@ function apply(spec, repeated = false) {
   if (spec.act === 'shift') { shift = !shift; render(); return; }
   // „Text“ schaltet zwischen normalem Text und Formel um
   if (spec.act === 'text') { mf.executeCommand(['switchMode', mf.mode === 'text' ? 'math' : 'text']); markMode(); return; }
+  // \ wie auf einer echten Tastatur: LaTeX-Befehl eintippen (\alpha …);
+  // Leerzeichen, Zeile oder Kästchen übernehmen ihn
+  if (spec.act === 'latex') { mf.executeCommand(['switchMode', 'latex', '', '\\']); return; }
+  if (mf.mode === 'latex' && (spec.act === 'space' || spec.key === 'Enter' || spec.key === 'Tab')) {
+    mf.executeCommand(['complete', 'accept-all']);
+    changed(mf);
+    return;
+  }
   if (spec.act === 'space') {
     if (mf.mode === 'text') mf.executeCommand(['typedText', ' ']); else mf.insert('\\;', { format: 'latex', selectionMode: 'after' });
     changed(mf);

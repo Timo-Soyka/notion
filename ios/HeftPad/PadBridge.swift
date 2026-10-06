@@ -468,8 +468,15 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
 
         case "sync.now":
             bg(reply) {
-                _ = self.store.reloadManifest()
-                DispatchQueue.main.async { self.host?.emit("tree-changed", [:]) }
+                self.store.reloadManifest()
+                let up = self.store.takeNews()
+                DispatchQueue.main.async {
+                    self.host?.emit("tree-changed", [:])
+                    if !up.notes.isEmpty { self.host?.emit("notes-changed", ["uuids": up.notes]) }
+                    for f in up.failures {
+                        self.host?.emit("toast", ["message": "Der Mac konnte eine Änderung nicht in DEVONthink eintragen – \(f)", "type": "error"])
+                    }
+                }
                 return ["ok": true]
             }
 
@@ -504,13 +511,15 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     // MARK: - Hilfen
 
-    /// „iCloud · abgeglichen vor 3 Min. · 2 Änderungen warten auf den Mac“
+    /// „iCloud · Mac vor 3 Min. · 2 Änderungen warten“ – der Mac meldet sich
+    /// mindestens alle zehn Minuten; bleibt das aus, läuft Heft dort wohl nicht
     private func syncLabel() -> String {
         var parts = ["iCloud"]
         if let g = store.lastSync, let date = ISO8601DateFormatter().date(from: g) {
             let f = RelativeDateTimeFormatter()
             f.locale = Locale(identifier: "de_DE")
-            parts.append("Mac \(f.localizedString(for: date, relativeTo: Date()))")
+            let when = f.localizedString(for: date, relativeTo: Date())
+            parts.append(Date().timeIntervalSince(date) > 20 * 60 ? "Mac zuletzt \(when) – läuft Heft am Mac?" : "Mac \(when)")
         }
         let n = store.pendingCount
         if n > 0 { parts.append(n == 1 ? "1 Änderung wartet" : "\(n) Änderungen warten") }
@@ -598,10 +607,13 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
                 let kind = n["kind"] as? String ?? ""
                 let uuid = (kind == "bundle" ? n["note"] : n["uuid"]) as? String ?? ""
                 var hay = name.lowercased()
-                if kind == "note" || kind == "bundle", let text = try? store.readNote(uuid)["markdown"] as? String { hay += " " + text.lowercased() }
+                // Suche wartet nicht auf iCloud – was noch nicht geladen ist, findet sie beim nächsten Mal
+                var text: String?
+                if kind == "note" || kind == "bundle" { text = (try? store.readNote(uuid, wait: false))?["markdown"] as? String }
+                if let text { hay += " " + text.lowercased() }
                 if kind != "group", words.allSatisfy({ hay.contains($0) }) {
                     var snippet = ""
-                    if let text = try? store.readNote(uuid)["markdown"] as? String, let r = text.lowercased().range(of: words[0]) {
+                    if let text, let r = text.lowercased().range(of: words[0]) {
                         let start = text.index(r.lowerBound, offsetBy: -40, limitedBy: text.startIndex) ?? text.startIndex
                         let end = text.index(r.upperBound, offsetBy: 80, limitedBy: text.endIndex) ?? text.endIndex
                         snippet = String(text[start..<end]).replacingOccurrences(of: "\n", with: " ")

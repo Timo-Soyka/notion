@@ -20,6 +20,15 @@ enum DTError: LocalizedError {
         case .script(let m): return m
         }
     }
+
+    /// Nur vorübergehend (DEVONthink nicht gestartet, beschäftigt, Datenbank zu,
+    /// Erlaubnis fehlt): später noch einmal versuchen statt aufzugeben
+    var isTransient: Bool {
+        switch self {
+        case .notRunning, .permission: return true
+        case .script(let m): return m.contains("Zeitüberschreitung") || m.contains("nicht geöffnet")
+        }
+    }
 }
 
 final class DEVONthink {

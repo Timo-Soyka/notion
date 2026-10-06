@@ -70,8 +70,13 @@ export function popover(anchor, content, opts = {}) {
     // Mathe-Tastatur (iPad) gehört zum Formelfeld im Popover
     if (e.target.closest && e.target.closest('.math-kbd, .math-kbd-show')) return;
     if (opts.keepOn && opts.keepOn.some(k => k && k.contains && k.contains(e.target))) return;
+    if (opts.keep && opts.keep(e)) return;
     api.close();
   };
+  // Finger und Pencil (iPad): schon beim Berühren schließen. Nachgemachte
+  // Mausklicks schickt iPadOS nicht immer (z. B. wenn das Antippen erst
+  // Knöpfe einblendet) – das Menü bliebe sonst offen stehen.
+  const onPointer = (e) => { if (e.pointerType !== 'mouse') onDown(e); };
   const onKey = (e) => {
     if (e.key === 'Escape' && openPopovers[openPopovers.length - 1] === api) {
       e.preventDefault();
@@ -86,6 +91,7 @@ export function popover(anchor, content, opts = {}) {
       closed = true;
       el.remove();
       document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('pointerdown', onPointer, true);
       document.removeEventListener('keydown', onKey, true);
       const i = openPopovers.indexOf(api);
       if (i >= 0) openPopovers.splice(i, 1);
@@ -97,6 +103,7 @@ export function popover(anchor, content, opts = {}) {
   setTimeout(() => {
     if (closed) return;
     document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('pointerdown', onPointer, true);
   }, 0);
   document.addEventListener('keydown', onKey, true);
   openPopovers.push(api);

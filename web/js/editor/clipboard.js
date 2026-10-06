@@ -68,15 +68,20 @@ export function blocksToHTML(blocks) {
   return out.join('');
 }
 
+// Blöcke in allen drei Fassungen in die Zwischenablage (copy-Ereignis)
+export function putBlocks(data, blocks) {
+  data.setData('text/plain', serializeBlocks(blocks, { footnotes: [] }));
+  data.setData('text/html', blocksToHTML(blocks));
+  data.setData(HEFT_BLOCKS, JSON.stringify(stripTransient(blocks)));
+}
+
 function onCopy(ed, e, cut) {
+  if (e.heftDone) return;
   if (ed.selected.size) {
     e.preventDefault();
     ed.syncAll();
     const blocks = ed.selectedBlocks();
-    const plain = serializeBlocks(blocks, { footnotes: [] });
-    e.clipboardData.setData('text/plain', plain);
-    e.clipboardData.setData('text/html', blocksToHTML(blocks));
-    e.clipboardData.setData(HEFT_BLOCKS, JSON.stringify(stripTransient(blocks)));
+    putBlocks(e.clipboardData, blocks);
     if (cut) ed.deleteBlocks(blocks);
     return;
   }

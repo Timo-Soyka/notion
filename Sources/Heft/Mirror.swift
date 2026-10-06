@@ -6,10 +6,12 @@ import CryptoKit
 // DEVONthink bleibt die eigentliche Ablage. Heft legt eine Kopie aller
 // Einträge und Dateien in „iCloud Drive/Heft“ ab; das iPad arbeitet darauf.
 // Seine Änderungen schreibt das iPad als kleine Aufträge nach „Aufträge/“ –
-// der Mac trägt sie über dieselben Wege in DEVONthink ein wie seine eigenen
-// Änderungen (mit Sicherung) und frischt danach die Kopie auf.
+// Heft am Mac bemerkt jeden neuen Auftrag sofort (Ordnerüberwachung, kein
+// Warten auf einen Takt), trägt ihn direkt in DEVONthink ein und frischt
+// danach die Kopie auf.
 //
-//   Heft.json          Verzeichnis: Ordnerbaum, Dateien, Prüfsummen, Zuordnung neuer Kennungen
+//   Heft.json          Verzeichnis: Ordnerbaum, Dateien, Prüfsummen, Zuordnung
+//                      neuer Kennungen und die zuletzt erledigten Aufträge
 //   Einstellungen.json Heft-Einstellungen für das iPad
 //   Dateien/<uuid>.<endung>
 //   Aufträge/*.json    Änderungen vom iPad (werden nach dem Eintragen gelöscht).
@@ -17,11 +19,11 @@ import CryptoKit
 //                      Auftrag und Inhalt garantiert zusammen an.
 //   Aufträge/Anhänge/  neue oder geänderte Bilder/PDFs vom iPad (mit Prüfsumme
 //                      im Auftrag: ist die Datei noch nicht ganz übertragen,
-//                      wartet der Mac auf den nächsten Durchgang)
+//                      wartet der Mac darauf – höchstens eine halbe Stunde)
 //   Aufträge/Fehler/   Aufträge, die nicht eingetragen werden konnten
 //
-// Haben Mac und iPad denselben Eintrag geändert, gewinnt nichts still: die
-// Fassung vom iPad landet als eigener Eintrag „… (iPad)“ daneben.
+// Es gibt keine Versionen und keine Konfliktkopien: Die zuletzt gespeicherte
+// Fassung gilt – egal ob sie vom Mac oder vom iPad kommt.
 
 final class Mirror {
     static let shared = Mirror()
@@ -29,6 +31,8 @@ final class Mirror {
     private let dt = DEVONthink.shared
     private let fm = FileManager.default
     private var timer: Timer?
+    private var watchers: [FolderWatcher] = []
+    private var activity: NSObjectProtocol?
     private var pending: DispatchWorkItem?
     private var busy = false
     private var again = false
@@ -38,6 +42,11 @@ final class Mirror {
     private(set) var lastRun: Date?
     private(set) var lastError: String?
     private(set) var lastLog: [String] = []
+
+    /// Ein Auftrag, der so lange nicht vollständig ankommt, wird aufgegeben
+    private let giveUpAfter: TimeInterval = 30 * 60
+    /// So viele erledigte Aufträge stehen im Verzeichnis (das iPad erkennt daran, was eingetragen ist)
+    private let keepApplied = 300
 
     private var settings: [String: Any] { Store.shared.get() }
     var enabled: Bool { (settings["ipadSync"] as? Bool) ?? false }
@@ -52,16 +61,44 @@ final class Mirror {
     private var manifestURL: URL { root.appendingPathComponent("Heft.json") }
     private var filesDir: URL { root.appendingPathComponent("Dateien", isDirectory: true) }
     private var ordersDir: URL { root.appendingPathComponent("Aufträge", isDirectory: true) }
+    private var attachmentsDir: URL { ordersDir.appendingPathComponent("Anhänge", isDirectory: true) }
     private var failedDir: URL { ordersDir.appendingPathComponent("Fehler", isDirectory: true) }
 
     // MARK: - Steuerung
 
     func start() {
         DispatchQueue.main.async {
+            // Läuft Heft nur im Hintergrund (Fenster zu), würde macOS es sonst
+            // schlafen legen („App Nap“) – Aufträge vom iPad blieben dann liegen
+            if self.activity == nil {
+                self.activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .automaticTerminationDisabled],
+                                                                      reason: "Abgleich mit dem iPad")
+            }
             self.timer?.invalidate()
-            self.timer = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.syncSoon(after: 0) }
-            self.syncSoon(after: 2)
+            // Nur noch als Rückfall und für Änderungen in DEVONthink selbst – Aufträge kommen über die Ordnerüberwachung
+            self.timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.syncSoon(after: 0) }
+            self.watch()
+            self.syncSoon(after: 1)
         }
+    }
+
+    func stop() {
+        DispatchQueue.main.async {
+            self.timer?.invalidate()
+            self.timer = nil
+            self.watchers = []
+            self.pending?.cancel()
+            if let a = self.activity { ProcessInfo.processInfo.endActivity(a); self.activity = nil }
+        }
+    }
+
+    /// Neue Aufträge und Anhänge sofort bemerken
+    private func watch() {
+        guard enabled else { return }
+        for d in [ordersDir, attachmentsDir] { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        // Ordner neu angelegt oder verschoben? Dann neu beobachten
+        if watchers.count == 2 && watchers.allSatisfy({ $0.isCurrent }) { return }
+        watchers = [ordersDir, attachmentsDir].compactMap { FolderWatcher(url: $0) { [weak self] in self?.syncSoon(after: 1) } }
     }
 
     func syncSoon(after delay: TimeInterval = 3) {
@@ -84,13 +121,14 @@ final class Mirror {
                 self.lastRun = Date()
                 switch result {
                 case .success(let r):
-                    self.lastError = nil
+                    self.lastError = r["error"] as? String
                     if let log = r["log"] as? [String], !log.isEmpty { self.lastLog = log }
                     if (r["changedTree"] as? Bool) == true { self.onChange?() }
                 case .failure(let e):
                     self.lastError = e.localizedDescription
                     NSLog("Heft-Abgleich: \(e.localizedDescription)")
                 }
+                self.watch()
                 completion?(result)
                 if self.again { self.again = false; self.syncSoon(after: 1) }
             }
@@ -105,40 +143,121 @@ final class Mirror {
         let rootGroup = s["root"] as? String ?? ""
         for d in [root, filesDir, ordersDir] { try fm.createDirectory(at: d, withIntermediateDirectories: true) }
 
-        var manifest = readJSON(manifestURL) ?? [:]
-        var files = manifest["files"] as? [String: [String: Any]] ?? [:]
-        var aliases = manifest["aliases"] as? [String: String] ?? [:]
+        let previous = readJSON(manifestURL) ?? [:]
+        var files = previous["files"] as? [String: [String: Any]] ?? [:]
+        var aliases = previous["aliases"] as? [String: String] ?? [:]
+        var applied = previous["applied"] as? [String] ?? []
+        var failed = previous["failed"] as? [String: String] ?? [:]
         var log: [String] = []
 
-        // 1. Aufträge vom iPad eintragen (in der Reihenfolge, in der sie entstanden sind)
-        let orders = ((try? fm.contentsOfDirectory(at: ordersDir, includingPropertiesForKeys: nil)) ?? [])
+        // 1. Aufträge vom iPad eintragen – streng in der Reihenfolge, in der sie entstanden sind
+        let urls = ((try? fm.contentsOfDirectory(at: ordersDir, includingPropertiesForKeys: [.creationDateKey])) ?? [])
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var orders: [(url: URL, order: [String: Any])] = []
+        for url in urls {
+            if let order = readJSON(url) { orders.append((url, order)); continue }
+            // Noch nicht ganz da: später weiter, damit nichts überholt wird
+            if age(of: url, order: nil) < giveUpAfter { log.append("Warte auf einen Auftrag"); break }
+            fail(url, order: ["op": "?"], message: "Auftrag ist unlesbar", failed: &failed, applied: &applied, log: &log)
+        }
+        // Mehrere Speicherstände desselben Eintrags (das iPad speichert laufend):
+        // nur der jüngste muss in DEVONthink ankommen
+        let known0 = aliases
+        let writeTarget = { (o: [String: Any]) -> String? in (o["uuid"] as? String).map { known0[$0] ?? $0 } }
+        var latestWrite: [String: Int] = [:]
+        for (i, o) in orders.enumerated() where (o.order["op"] as? String) == "write" {
+            if let u = writeTarget(o.order) { latestWrite[u] = i }
+        }
         var appliedAny = false
-        for url in orders {
-            guard let order = readJSON(url) else { continue }
+        var transientError: Error?
+        for (i, item) in orders.enumerated() {
+            let (url, order) = item
+            let name = url.lastPathComponent
+            if (order["op"] as? String) == "write", let u = writeTarget(order), let last = latestWrite[u], last > i {
+                dropAttachment(of: order)
+                try? coordinatedDelete(url)
+                applied.append(name)
+                continue
+            }
             do {
                 let note = try apply(order, files: &files, aliases: &aliases)
                 log.append(note)
+                applied.append(name)
                 try coordinatedDelete(url)
                 appliedAny = true
             } catch is NotYet {
                 // Anhang noch unterwegs – Reihenfolge wahren, Rest beim nächsten Mal
-                log.append("Warte auf Anhang")
+                if age(of: url, order: order) < giveUpAfter { log.append("Warte auf einen Anhang"); break }
+                fail(url, order: order, message: "Der Anhang (Bild/PDF) ist nicht in iCloud angekommen", failed: &failed, applied: &applied, log: &log)
+            } catch let e as DTError where e.isTransient {
+                // DEVONthink gerade nicht erreichbar: nichts verwerfen, beim nächsten Durchgang weiter
+                log.append(e.localizedDescription)
+                transientError = e
                 break
             } catch {
-                var failed = order
-                failed["error"] = error.localizedDescription
-                try? fm.createDirectory(at: failedDir, withIntermediateDirectories: true)
-                if let data = try? JSONSerialization.data(withJSONObject: failed, options: [.prettyPrinted]) {
-                    try? coordinatedWrite(data, to: failedDir.appendingPathComponent(url.lastPathComponent))
-                }
-                try? coordinatedDelete(url)
-                log.append("Fehler bei \(order["op"] as? String ?? "?"): \(error.localizedDescription)")
+                fail(url, order: order, message: error.localizedDescription, failed: &failed, applied: &applied, log: &log)
             }
         }
+        if applied.count > keepApplied { applied.removeFirst(applied.count - keepApplied) }
+        let known = Set(applied)
+        failed = failed.filter { known.contains($0.key) }
 
-        // 2. Stand aus DEVONthink holen und geänderte Dateien in die Kopie schreiben
+        // 2. Stand aus DEVONthink holen und geänderte Dateien in die Kopie schreiben.
+        //    Klappt das nicht, werden trotzdem die neuen Kennungen und die erledigten
+        //    Aufträge gesichert – sonst fänden spätere Aufträge vom iPad ihr Ziel nicht.
+        var tree = previous["tree"] as? [String: Any] ?? [:]
+        var exported = 0, removed = 0
+        var copyError: Error? = transientError
+        do {
+            (tree, exported, removed) = try refreshCopy(database: database, rootGroup: rootGroup, files: &files)
+        } catch {
+            // Noch nie ein Verzeichnis geschrieben: lieber keins als ein leeres
+            if previous["tree"] == nil { throw error }
+            copyError = error
+        }
+
+        // 4. Verzeichnis und Einstellungen schreiben – nur, wenn sich etwas geändert hat
+        //    (jedes Schreiben ist ein Hochladen nach iCloud und ein Neuladen auf dem iPad),
+        //    spätestens aber alle zehn Minuten als Lebenszeichen für das iPad
+        var manifest: [String: Any] = [
+            "version": 2,
+            "database": database,
+            "tree": tree,
+            "files": files,
+            "aliases": aliases,
+            "applied": applied,
+            "failed": failed,
+            "mac": Host.current().localizedName ?? "Mac"
+        ]
+        var unchanged = previous
+        unchanged["generated"] = nil
+        unchanged["changed"] = nil
+        let now = Date()
+        let iso = ISO8601DateFormatter()
+        let contentChanged = jsonString(unchanged) != jsonString(manifest)
+        let lastWrite = (previous["generated"] as? String).flatMap { iso.date(from: $0) }
+        if contentChanged || lastWrite == nil || now.timeIntervalSince(lastWrite!) > 600 {
+            manifest["changed"] = contentChanged ? iso.string(from: now)
+                : (previous["changed"] as? String) ?? (previous["generated"] as? String) ?? iso.string(from: now)
+            manifest["generated"] = iso.string(from: now)
+            try coordinatedWrite(try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]), to: manifestURL)
+        }
+        var shared = s
+        for k in ["roots"] { shared[k] = nil }
+        let settingsData = try JSONSerialization.data(withJSONObject: shared, options: [.prettyPrinted, .sortedKeys])
+        let settingsURL = root.appendingPathComponent("Einstellungen.json")
+        if (try? coordinatedRead(settingsURL)) != settingsData { try coordinatedWrite(settingsData, to: settingsURL) }
+
+        if let copyError, !appliedAny { throw copyError }
+        let changedTree = appliedAny || jsonString(previous["tree"] ?? NSNull()) != jsonString(tree)
+        var result: [String: Any] = ["orders": orders.count, "exported": exported, "removed": removed, "log": log, "changedTree": changedTree]
+        if let copyError { result["error"] = copyError.localizedDescription }
+        return result
+    }
+
+    /// Stand aus DEVONthink in die Kopie: geänderte Dateien schreiben, gelöschte entfernen
+    private func refreshCopy(database: String, rootGroup: String, files: inout [String: [String: Any]]) throws -> ([String: Any], Int, Int) {
         guard let tree = try dt.run(Scripts.tree, [database, rootGroup]) as? [String: Any] else { throw DTError.script("Ordnerbaum nicht lesbar") }
         var current: [String: [String: Any]] = [:]   // uuid → { modified, ext, kind, name }
         func collect(_ nodes: [[String: Any]]) {
@@ -168,11 +287,16 @@ final class Mirror {
                       let data = try? Data(contentsOf: URL(fileURLWithPath: p)) else { continue }
                 let ext = (info["ext"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? URL(fileURLWithPath: p).pathExtension.lowercased()
                 let rel = "Dateien/\(uuid)\(ext.isEmpty ? "" : "." + ext)"
-                try coordinatedWrite(data, to: root.appendingPathComponent(rel))
                 let isNote = (info["kind"] as? String) == "note"
-                files[uuid] = ["file": rel, "modified": paths[uuid]?["modified"] ?? info["modified"] ?? "", "hash": isNote ? Self.noteHash(data) : sha256(data),
+                let hash = isNote ? Self.noteHash(data) : sha256(data)
+                // Inhalt gleich (z. B. nur das Datum hat sich geändert): Datei nicht neu hochladen
+                let target = root.appendingPathComponent(rel)
+                if (files[uuid]?["hash"] as? String) != hash || (files[uuid]?["file"] as? String) != rel || !fm.fileExists(atPath: target.path) {
+                    try coordinatedWrite(data, to: target)
+                    exported += 1
+                }
+                files[uuid] = ["file": rel, "modified": paths[uuid]?["modified"] ?? info["modified"] ?? "", "hash": hash,
                                "size": data.count, "kind": info["kind"] ?? "", "name": info["name"] ?? "", "ext": ext]
-                exported += 1
             }
         }
 
@@ -183,26 +307,33 @@ final class Mirror {
             files[uuid] = nil
             removed += 1
         }
+        return (tree, exported, removed)
+    }
 
-        // 4. Verzeichnis und Einstellungen schreiben
-        let iso = ISO8601DateFormatter().string(from: Date())
-        let previousTree = manifest["tree"].flatMap { jsonString($0) }
-        manifest = [
-            "version": 1,
-            "generated": iso,
-            "database": database,
-            "tree": tree,
-            "files": files,
-            "aliases": aliases,
-            "mac": Host.current().localizedName ?? "Mac"
-        ]
-        try coordinatedWrite(try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]), to: manifestURL)
-        var shared = s
-        for k in ["roots"] { shared[k] = nil }
-        try coordinatedWrite(try JSONSerialization.data(withJSONObject: shared, options: [.prettyPrinted, .sortedKeys]), to: root.appendingPathComponent("Einstellungen.json"))
+    /// Auftrag, der sich nicht eintragen lässt: nach Aufträge/Fehler legen und dem iPad melden
+    private func fail(_ url: URL, order: [String: Any], message: String, failed: inout [String: String], applied: inout [String], log: inout [String]) {
+        var copy = order
+        copy["error"] = message
+        try? fm.createDirectory(at: failedDir, withIntermediateDirectories: true)
+        if let data = try? JSONSerialization.data(withJSONObject: copy, options: [.prettyPrinted]) {
+            try? coordinatedWrite(data, to: failedDir.appendingPathComponent(url.lastPathComponent))
+        }
+        try? coordinatedDelete(url)
+        let name = url.lastPathComponent
+        applied.append(name)
+        failed[name] = message
+        log.append("Fehler bei \(order["op"] as? String ?? "?"): \(message)")
+    }
 
-        let changedTree = appliedAny || previousTree != jsonString(tree)
-        return ["orders": orders.count, "exported": exported, "removed": removed, "log": log, "changedTree": changedTree]
+    /// Wie lange ist der Auftrag schon unterwegs? (Zeitpunkt vom iPad, sonst Dateidatum)
+    private func age(of url: URL, order: [String: Any]?) -> TimeInterval {
+        if let at = order?["at"] as? String, let d = ISO8601DateFormatter().date(from: at) { return Date().timeIntervalSince(d) }
+        let created = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date()
+        return Date().timeIntervalSince(created)
+    }
+
+    private func dropAttachment(of order: [String: Any]) {
+        if let rel = order["attachment"] as? String, !rel.isEmpty { try? coordinatedDelete(root.appendingPathComponent(rel)) }
     }
 
     // MARK: - Aufträge vom iPad
@@ -227,9 +358,6 @@ final class Mirror {
             if let want = o["hash"] as? String, !want.isEmpty, self.sha256(data) != want { throw NotYet() }
             return data
         }
-        let dropAttachment = {
-            if let rel = o["attachment"] as? String, !rel.isEmpty { try? self.coordinatedDelete(self.root.appendingPathComponent(rel)) }
-        }
         let fixLinks = { (md: String) -> String in
             var out = md
             for (tmp, real) in map { out = out.replacingOccurrences(of: "x-devonthink-item://\(tmp)", with: "x-devonthink-item://\(real)") }
@@ -238,37 +366,11 @@ final class Mirror {
 
         switch op {
         case "write":
+            // Die Fassung vom iPad gilt – ohne Vergleich mit älteren Ständen
             let uuid = resolve(o["uuid"] as? String)
             let data = try content()
             let known = files[uuid]
-            let info = try dt.run(Scripts.paths, [jsonString([uuid])]) as? [String: [String: Any]]
-            let nowModified = info?[uuid]?["modified"] as? String
-            let isNote = (known?["kind"] as? String) == "note" || (o["kind"] as? String) == "note"
-            // Hat sich der Eintrag am Mac geändert, seit das iPad ihn geöffnet hat?
-            // Verglichen wird der Inhalt (Prüfsumme), nicht das Datum – sonst sähe
-            // jede Zwischenspeicherung des iPads nach einem Konflikt aus.
-            let changedOnMac: Bool
-            if let baseHash = o["baseHash"] as? String, !baseHash.isEmpty,
-               let p = info?[uuid]?["path"] as? String, let current = try? Data(contentsOf: URL(fileURLWithPath: p)) {
-                // (ältere Verzeichnisse enthalten noch die einfache Prüfsumme – beide gelten)
-                changedOnMac = baseHash != sha256(current) && !(isNote && baseHash == Self.noteHash(current))
-            } else {
-                let base = (o["base"] as? String) ?? (known?["modified"] as? String)
-                changedOnMac = base != nil && nowModified != nil && base != nowModified
-            }
-            if changedOnMac {
-                // Beide Seiten haben geändert: iPad-Fassung als eigenen Eintrag daneben legen
-                let parentInfo = try dt.run(Scripts.info, [uuid]) as? [String: Any]
-                let parent = parentInfo?["group"] as? String ?? ""
-                let name = "\(o["name"] as? String ?? known?["name"] as? String ?? "Eintrag") (iPad)"
-                let ext = (known?["ext"] as? String) ?? (isNote ? "md" : "dat")
-                let tmp = Store.shared.tempFile("\(name).\(ext)")
-                try data.write(to: tmp)
-                defer { try? fm.removeItem(at: tmp) }
-                _ = try dt.run(Scripts.importInto, [parent, tmp.path, name])
-                dropAttachment()
-                return "Konflikt: iPad-Fassung von „\(name)“ daneben gelegt"
-            }
+            let isNote = (known?["kind"] as? String) == "note" || (o["kind"] as? String) == "note" || o["markdown"] != nil
             if isNote {
                 let md = fixLinks(String(decoding: data, as: UTF8.self))
                 Store.shared.backup(uuid: uuid, markdown: md)
@@ -284,9 +386,9 @@ final class Mirror {
                 defer { try? fm.removeItem(at: tmp) }
                 try dt.replaceData(uuid: uuid, with: tmp)
                 DispatchQueue.main.async { SchemeHandler.shared.invalidate(uuid: uuid) }
-                dropAttachment()
+                dropAttachment(of: o)
             }
-            return "Geändert: \(uuid)"
+            return "Geändert: \(o["name"] as? String ?? known?["name"] as? String ?? uuid)"
 
         case "create-note":
             let parent = resolve(o["parent"] as? String)
@@ -312,7 +414,7 @@ final class Mirror {
             defer { try? fm.removeItem(at: tmp) }
             let r = try dt.run(Scripts.importInto, [parent, tmp.path, name]) as? [String: Any]
             if let tmpId = o["tempId"] as? String, let real = r?["uuid"] as? String { aliases[tmpId] = real }
-            dropAttachment()
+            dropAttachment(of: o)
             return "Neue Datei: \(name)"
 
         case "create-group":
@@ -409,4 +511,31 @@ final class Mirror {
         let trimmed = text.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
         return SHA256.hash(data: Data(trimmed.utf8)).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+/// Meldet, wenn in einem Ordner Dateien dazukommen, verschwinden oder umbenannt
+/// werden – auch wenn iCloud sie von einem anderen Gerät hineinlegt
+final class FolderWatcher {
+    let url: URL
+    private let source: DispatchSourceFileSystemObject
+    private var gone = false
+
+    init?(url: URL, onChange: @escaping () -> Void) {
+        let fd = open(url.path, O_EVTONLY)
+        guard fd >= 0 else { return nil }
+        self.url = url
+        source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .link, .rename, .delete], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            // Ordner selbst gelöscht oder verschoben: beim nächsten Durchgang neu anlegen und beobachten
+            if !self.source.data.intersection([.delete, .rename]).isEmpty { self.gone = true }
+            onChange()
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+    }
+
+    var isCurrent: Bool { !gone && FileManager.default.fileExists(atPath: url.path) }
+
+    deinit { source.cancel() }
 }

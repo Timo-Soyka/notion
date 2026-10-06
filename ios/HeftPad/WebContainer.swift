@@ -63,7 +63,8 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         if webView.responds(to: setter) { webView.perform(setter, with: focusPolicy) }
         webView.load(URLRequest(url: URL(string: "heft://app/index.html")!))
 
-        // Neues vom Mac? Verzeichnis regelmäßig prüfen
+        // Neues vom Mac: iCloud meldet ein neues Verzeichnis sofort; dazu als Rückfall alle 15 s nachsehen
+        MirrorStore.shared.onManifestChange = { [weak self] in DispatchQueue.main.async { self?.checkMirrorSoon() } }
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.checkMirror() }
         NotificationCenter.default.addObserver(self, selector: #selector(becameActive), name: UIApplication.didBecomeActiveNotification, object: nil)
         #if DEBUG
@@ -76,10 +77,26 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         checkMirror()
     }
 
+    // Mehrere Meldungen kurz hintereinander zählen einmal
+    private var checkWork: DispatchWorkItem?
+    private func checkMirrorSoon() {
+        checkWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.checkMirror() }
+        checkWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: w)
+    }
+
     private func checkMirror() {
         DispatchQueue.global(qos: .utility).async {
-            if MirrorStore.shared.reloadManifest() {
-                DispatchQueue.main.async { self.emit("tree-changed", [:]) }
+            let changed = MirrorStore.shared.reloadManifest().treeChanged
+            let up = MirrorStore.shared.takeNews()
+            DispatchQueue.main.async {
+                if changed { self.emit("tree-changed", [:]) }
+                // Offener Eintrag vom Mac geändert: neu laden (wenn hier nichts Ungesichertes ist)
+                if !up.notes.isEmpty { self.emit("notes-changed", ["uuids": up.notes]) }
+                for f in up.failures {
+                    self.emit("toast", ["message": "Der Mac konnte eine Änderung nicht in DEVONthink eintragen – \(f)", "type": "error"])
+                }
             }
         }
     }
