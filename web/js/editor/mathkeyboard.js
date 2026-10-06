@@ -145,6 +145,8 @@ function openTextBar(mf) {
     if (insert && txt) {
       try { if (sel) mf.selection = sel; } catch { /* egal */ }
       mf.insert(`\\text{ ${escapeText(txt)} }`, { format: 'latex', mode: 'math', selectionMode: 'after' });
+      // Danach als Formel weiterschreiben (MathLive bliebe sonst hinter dem Text im Textmodus)
+      if (mf.mode === 'text') mf.executeCommand(['switchMode', 'math']);
       changed(mf);
     }
     if (back) mf.focus();
