@@ -12,6 +12,11 @@ import CryptoKit
 // Es gibt keine Versionen und keine Konfliktkopien: Die zuletzt gespeicherte
 // Fassung gilt. Welche Aufträge erledigt sind, steht in Heft.json („applied“).
 //
+// Speicherstände sammeln sich nicht in der Cloud: Liegt der letzte Auftrag für
+// denselben Eintrag noch unabgeholt da, ersetzt der neue ihn (samt Anhang).
+// Ohne Mac bleibt so pro Eintrag ein Auftrag, und iCloud muss nicht jede
+// Zwischenspeicherung einzeln hochladen.
+//
 // Neue Dinge bekommen eine vorläufige Kennung (NEU-…). Sobald der Mac sie
 // angelegt hat, steht die echte Kennung in Heft.json unter „aliases“.
 
@@ -49,6 +54,7 @@ final class MirrorStore {
     struct PadState: Codable {
         var pending: [Pending] = []
         var settings: [String: AnyCodable] = [:] // eigene Einstellungen (vor denen vom Mac)
+        var lastOrder: String? = nil             // zuletzt geschriebene Auftragsdatei
     }
 
     /// Ergebnis einer Prüfung von Heft.json
@@ -466,7 +472,9 @@ final class MirrorStore {
         // könnte gerade eingetragen werden) – also einen Schreibauftrag hinterher
         var order: [String: Any] = ["op": "write", "uuid": uuid, "kind": "note", "name": name, "markdown": markdown]
         if let tags { order["tags"] = tags }
+        let prev = replaceable(uuid, text: true)
         let oid = try writeOrder(order)
+        if let prev { drop(prev) }
         let now = Date()
         thinOut(uuid)
         state.pending.append(Pending(id: oid, op: "write", uuid: uuid, name: name, markdown: markdown, kind: "note", created: now, hash: Self.noteHash(markdown)))
@@ -564,7 +572,9 @@ final class MirrorStore {
         try? fm.createDirectory(at: root.appendingPathComponent("Aufträge/Anhänge", isDirectory: true), withIntermediateDirectories: true)
         let hash = Self.sha256(data)
         try coordinateWrite(data, to: root.appendingPathComponent(rel))
+        let prev = replaceable(uuid, text: false)
         let oid = try writeOrder(["op": "write", "uuid": uuid, "attachment": rel, "hash": hash])
+        if let prev { drop(prev) }
         thinOut(uuid)
         state.pending.append(Pending(id: oid, op: "write", uuid: uuid, localFile: att, created: Date(), hash: hash))
         saveState()
@@ -695,6 +705,7 @@ final class MirrorStore {
     // MARK: - Aufträge
 
     private func writeOrder(_ order: [String: Any]) throws -> String {
+        lock.lock(); defer { lock.unlock() }
         guard let root else { throw err("Kein Heft-Ordner gewählt") }
         var o = order
         o["at"] = isoNow()
@@ -707,7 +718,42 @@ final class MirrorStore {
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let data = try JSONSerialization.data(withJSONObject: o, options: [.prettyPrinted])
         try coordinateWrite(data, to: dir.appendingPathComponent(name))
+        state.lastOrder = name
         return name
+    }
+
+    /// Schreibauftrag, den ein neuer Speicherstand ersetzen darf: der zuletzt geschriebene
+    /// Auftrag, für denselben Eintrag und dieselbe Art (Text/Datei), vom Mac noch nicht
+    /// abgeholt. Nur der letzte – sonst käme der neue Stand vor Aufträge, auf die er sich
+    /// stützt (z. B. ein gerade eingefügtes Bild).
+    private func replaceable(_ uuid: String, text: Bool) -> Pending? {
+        guard let root, let p = state.pending.last, p.id == state.lastOrder,
+              p.op == "write", p.applied != true, (p.kind == "note") == text,
+              let pu = p.uuid, pu == uuid || aliasMap[pu] == uuid,
+              fm.fileExists(atPath: root.appendingPathComponent("Aufträge/\(p.id)").path) else { return nil }
+        return p
+    }
+
+    /// Ersetzten Auftrag samt Anhang und lokaler Kopie entfernen. Hat der Mac ihn gerade
+    /// doch noch eingetragen, schadet das nicht: Der neue Stand folgt gleich danach.
+    private func drop(_ p: Pending) {
+        state.pending.removeAll { $0.id == p.id }
+        guard let root else { return }
+        try? coordinateDelete(root.appendingPathComponent("Aufträge/\(p.id)"))
+        if let lf = p.localFile {
+            try? coordinateDelete(root.appendingPathComponent("Aufträge/Anhänge/\(lf)"))
+            deleteLocal(lf)
+        }
+    }
+
+    private func coordinateDelete(_ url: URL) throws {
+        guard fm.fileExists(atPath: url.path) else { return }
+        var e: NSError?
+        var inner: Error?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &e) { u in
+            do { try self.fm.removeItem(at: u) } catch { inner = error }
+        }
+        if let x = e ?? inner { throw x }
     }
 
     private var counter: Int {
