@@ -111,6 +111,14 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 }
             }
 
+        case "sync.cleanup":
+            Mirror.shared.cleanup { result in
+                switch result {
+                case .success(let r): reply(.success(r))
+                case .failure(let e): reply(.failure(e))
+                }
+            }
+
         case "sync.info":
             let m = Mirror.shared
             var info: [String: Any] = ["enabled": m.enabled, "folder": m.root.path, "log": m.lastLog, "loginItem": SMAppService.mainApp.status == .enabled]
@@ -178,7 +186,8 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 if let d = r as? [String: Any], d["treeChanged"] as? Bool == true {
                     DispatchQueue.main.async { self.host?.emit("tree-changed", [:]) }
                 }
-                Mirror.shared.syncSoon(after: 5)
+                // Gleich in die iCloud-Kopie, damit das iPad den Stand schnell sieht
+                Mirror.shared.syncSoon(after: 1.5)
                 return r
             }
 
