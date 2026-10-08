@@ -203,6 +203,7 @@ export function attachDnd(ed) {
         if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < (touch ? 6 : 4)) return;
         started = true;
         dragging = true;
+        if (touch && touch.commit) touch.commit();
         if (touch) {
           // Offene Formel und Tastatur schließen – sie verdecken sonst das Ziel
           if (ed.activeAtom) ed.deactivate();
@@ -257,8 +258,10 @@ export function attachDnd(ed) {
     const finish = (ev, cancelled) => {
       if (!mine(ev) || !end()) return;
       if (!started) {
+        if (cancelled) return;
+        if (touch && touch.commit) touch.commit();
         // Antippen: Menü – mit dem Finger nur, wenn der Griff schon zu sehen war
-        if (!cancelled && (!touch || touch.menu)) openMenu(b);
+        if (!touch || touch.menu) openMenu(b);
         return;
       }
       if (drop && !cancelled) ed.moveBlocks(blocks, drop.target, drop.pos);
@@ -316,20 +319,21 @@ export function attachDnd(ed) {
     if (hoverBlock && !ed.byId.has(hoverBlock.id)) { hoverBlock = null; handle.classList.remove('show'); }
     const b = gripTarget(e);
     if (!b) return;
-    // Keine nachgemachten Mausklicks, nichts darunter reagiert – offene Menüs schließen deshalb hier
+    // Keine nachgemachten Mausklicks, nichts darunter reagiert (offene Menüs schließt commit unten)
     e.preventDefault();
     e.stopPropagation();
     // Menü dieses Blocks gerade offen? Dann nur schließen
     const wasOpen = !!menuFor && menuFor.id === b.id && menuFor.pop && !menuFor.pop.closed;
-    closeAllPopovers();
     const shown = handle.classList.contains('show') && hoverBlock === b;
-    hoverBlock = b;
-    place(b);
+    // Menüs schließen und den Griff versetzen erst, wenn die Berührung wirklich
+    // tippt oder zieht. Wird sie vorher abgelöst (aufliegender Handballen, dann
+    // tippt der Finger), bleibt alles, wie es war.
+    const commit = () => { closeAllPopovers(); hoverBlock = b; place(b); };
     touchGrab = true;
     // Alle weiteren Ereignisse dieser Berührung hierher – auch wenn das berührte
     // Element unterwegs neu gezeichnet wird
     try { d.setPointerCapture(e.pointerId); } catch { /* egal */ }
-    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen, type: e.pointerType });
+    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen, type: e.pointerType, commit });
   }, true);
   // Solange der Griff gehalten wird: kein Scrollen, keine Handschrift-Erkennung
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });

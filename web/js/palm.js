@@ -9,7 +9,7 @@
 //     Handballen: Laufende Finger-Aktionen (Ziehen, langes Drücken) brechen ab,
 //     und die nachgemachten Klicks von iPadOS an dieser Stelle verfallen.
 
-const AFTER_PEN_MS = 1000;
+const AFTER_PEN_MS = 350;
 const CLICK_WINDOW_MS = 800;
 
 let penDown = 0;
@@ -57,7 +57,10 @@ export function watchPalm() {
     }
     if (e.pointerType !== 'touch') return;
     touches.delete(e.pointerId);
-    if (!palmIds.delete(e.pointerId)) return;
+    if (!palmIds.has(e.pointerId)) return;
+    // Erst danach vergessen: Wer dieses Loslassen noch behandelt, soll es als Handballen erkennen
+    const id = e.pointerId;
+    setTimeout(() => palmIds.delete(id), 0);
     const now = performance.now();
     palmSpots = palmSpots.filter(s => s.until > now);
     palmSpots.push({ x: e.clientX, y: e.clientY, until: now + CLICK_WINDOW_MS });
