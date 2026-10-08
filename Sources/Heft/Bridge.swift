@@ -99,6 +99,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             let patch = a["settings"] as? [String: Any] ?? [:]
             let merged = Store.shared.merge(patch)
             if patch["ipadSync"] as? Bool == true { Mirror.shared.start() }
+            if patch["ipadSync"] as? Bool == false { Mirror.shared.stop() }
             Mirror.shared.syncSoon()
             reply(.success(merged))
 

@@ -156,6 +156,8 @@ export class App {
     on('will-quit', async () => { await this.saveNow(); await this.leaveNote(); call('app.quitReady', {}); });
     on('app-active', () => { this.lib.refresh(); this.checkDT(); this.reloadIfChanged(); });
     on('tree-changed', () => this.sidebar.renderTree());
+    // iPad: Der Mac hat Einträge geändert – ist der offene dabei, neu laden (wenn hier nichts Ungesichertes ist)
+    on('notes-changed', ({ uuids } = {}) => { if (this.current && (uuids || []).includes(this.current.uuid)) this.reloadIfChanged(); });
     on('toast', ({ message, type }) => toast(message, { type }));
     // Fenster am Mac geschlossen, Heft gleicht im Hintergrund weiter ab: jetzt speichern
     on('window-hide', () => { this.saveNow(); });
@@ -597,6 +599,10 @@ export class App {
     try {
       const res = await call('note.read', { uuid: this.current.uuid });
       if (res.modified && this.current.loadedModified && res.modified !== this.current.loadedModified) {
+        // Nur der Stand hat sich geändert, der Text ist derselbe (z. B. eigene Änderung ist angekommen): nichts neu laden
+        const same = (a) => String(a || '').replace(/\r\n/g, '\n').replace(/\s+$/, '');
+        if (same(res.markdown) === same(serializeDocument(this.editor.getDoc()))) { this.current.loadedModified = res.modified; return; }
+        if (this.dirty) return;
         const doc = parseDocument(res.markdown || '', { defaultTitle: stripNumber(res.name), recordName: res.name });
         this.editor.load(doc);
         this.current.loadedModified = res.modified;

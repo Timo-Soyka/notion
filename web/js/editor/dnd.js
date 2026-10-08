@@ -172,17 +172,32 @@ export function attachDnd(ed) {
 
   // ⋮⋮: Klick = Menü, Ziehen = Verschieben
   let dragging = false;
+  // Laufende Geste am Griff. Kommt ihr Ende nie an (iPadOS bricht Berührungen
+  // manchmal ab, ohne es zu melden), beendet die nächste Berührung sie – sonst
+  // bliebe der Griff bis zum Neustart tot.
+  let active = null;
+  // Offenes Blockmenü (iPad: erneutes Antippen des Griffs schließt es nur –
+  // das Menü bleibt dafür bei Berührungen seines Griffs offen, bis der Griff
+  // selbst entscheidet)
+  let menuFor = null;
+  const openMenu = (b) => {
+    const keep = (e) => !!e.pointerType && e.pointerType !== 'mouse' && gripTarget(e) === b;
+    menuFor = { id: b.id, pop: ed.openBlockMenu(b, grip, { keep }) };
+  };
   // touch: { id, menu } beim Ziehen mit Finger oder Pencil (Pointer-Ereignisse statt Maus)
   const startDrag = (b, sx, sy, touch = null) => {
+    if (active) active.abort();
     let started = false;
     let ghost = null, indicator = null, drop = null;
     const blocks = ed.selected.has(b.id) ? ed.selectedBlocks() : [b];
     const scroller = ed.root.closest('.view') || document.scrollingElement;
     let scrollTimer = null;
+    let ended = false;
     const mine = (ev) => !touch || ev.pointerId === touch.id;
     let offPen = null;
     const move = (ev) => {
       if (!mine(ev)) return;
+      gesture.last = performance.now();
       if (touch) ev.preventDefault();
       if (!started) {
         if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < (touch ? 6 : 4)) return;
@@ -215,12 +230,15 @@ export function attachDnd(ed) {
       const edge = ev.clientY < sr.top + zone ? -1 : ev.clientY > sr.bottom - zone ? 1 : 0;
       if (edge) scrollTimer = setInterval(() => { scroller.scrollTop += edge * 14; }, 16);
     };
-    const finish = (ev, cancelled) => {
-      if (!mine(ev)) return;
+    // Aufräumen – genau einmal, egal ob die Geste endet, abbricht oder hängen blieb
+    const end = () => {
+      if (ended) return false;
+      ended = true;
       if (touch) {
         window.removeEventListener('pointermove', move, true);
         window.removeEventListener('pointerup', up, true);
         window.removeEventListener('pointercancel', cancel, true);
+        d.removeEventListener('lostpointercapture', cancel);
         if (offPen) offPen();
         touchGrab = false;
       } else {
@@ -228,24 +246,37 @@ export function attachDnd(ed) {
         window.removeEventListener('mouseup', up);
       }
       clearInterval(scrollTimer);
+      if (active === gesture) active = null;
+      if (started) {
+        dragging = false;
+        ghost && ghost.remove();
+        indicator && indicator.remove();
+      }
+      return true;
+    };
+    const finish = (ev, cancelled) => {
+      if (!mine(ev) || !end()) return;
       if (!started) {
         // Antippen: Menü – mit dem Finger nur, wenn der Griff schon zu sehen war
-        if (!cancelled && (!touch || touch.menu)) ed.openBlockMenu(b, grip);
+        if (!cancelled && (!touch || touch.menu)) openMenu(b);
         return;
       }
-      dragging = false;
-      ghost && ghost.remove();
-      indicator && indicator.remove();
       if (drop && !cancelled) ed.moveBlocks(blocks, drop.target, drop.pos);
       // Griff gleich wieder am verschobenen Block – zum Weiterschieben
       if (touch) requestAnimationFrame(() => { if (ed.byId.has(b.id)) { hoverBlock = b; place(b); } });
     };
     const up = (ev) => finish(ev, false);
     const cancel = (ev) => finish(ev, true);
+    // Art des Zeigers: Eine neue Berührung beendet nur eine Geste derselben Art
+    // (ein aufliegender Handballen bricht das Ziehen mit dem Pencil nicht ab)
+    const gesture = { abort: end, type: touch ? touch.type : 'mouse', last: performance.now() };
+    active = gesture;
     if (touch) {
       window.addEventListener('pointermove', move, { capture: true, passive: false });
       window.addEventListener('pointerup', up, true);
       window.addEventListener('pointercancel', cancel, true);
+      // Ende der Berührung auch dann, wenn pointerup/pointercancel nicht ankommen
+      d.addEventListener('lostpointercapture', cancel);
       // Setzt der Pencil auf, während ein Finger den Griff hält, war es der Handballen
       if (touch.type === 'touch') offPen = onPenDown(() => cancel({ pointerId: touch.id }));
     } else {
@@ -262,24 +293,43 @@ export function attachDnd(ed) {
   // iPad: Griff mit Finger oder Pencil anfassen und ziehen – ohne vorher den
   // Block antippen zu müssen
   let touchGrab = false;
-  d.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' || !e.isPrimary || ed.readonly || dragging || isPalm(e)) return;
+  // Welcher Block wird hier am Griff angefasst? (null: keiner)
+  const gripTarget = (e) => {
     const t = e.target;
-    if (t.closest && t.closest('.col-resize, .tcol-resize, .plot-resize, .img-handle, .popover')) return;
+    if (t.closest && t.closest('.col-resize, .tcol-resize, .plot-resize, .img-handle, .popover')) return null;
     // Der sichtbare +-Knopf bleibt ein Knopf
-    if (t.closest && t.closest('.blk-handle button:not(.grip)') && handle.classList.contains('show')) return;
+    if (t.closest && t.closest('.blk-handle button:not(.grip)') && handle.classList.contains('show')) return null;
     const onGrip = !!(t.closest && t.closest('.blk-handle .grip')) && handle.classList.contains('show') && hoverBlock;
-    const b = onGrip ? hoverBlock : gripZoneAt(e.clientX, e.clientY);
+    return onGrip ? hoverBlock : gripZoneAt(e.clientX, e.clientY);
+  };
+  d.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' || ed.readonly || isPalm(e)) return;
+    // Finger: jede Berührung, nicht nur die erste. Liegt schon etwas auf (meist der
+    // Handballen), ist der Finger am Griff nicht mehr die „erste“ Berührung – er
+    // käme sonst nie an, und Menü und Ziehen gingen nicht, solange die Hand aufliegt.
+    if (e.pointerType === 'pen' && !e.isPrimary) return;
+    // Eine neue Berührung derselben Art löst eine offene Geste ab: Entweder ist
+    // ihr Ende verloren gegangen, oder sie kam vom aufliegenden Handballen.
+    // Eine andere Art, die sich länger nicht mehr gerührt hat, ist ebenfalls hängengeblieben.
+    if (active) { if (active.type === e.pointerType || performance.now() - active.last > 1500) active.abort(); else return; }
+    // Ein Griff, der zu einem gelöschten Block gehört, zählt nicht
+    if (hoverBlock && !ed.byId.has(hoverBlock.id)) { hoverBlock = null; handle.classList.remove('show'); }
+    const b = gripTarget(e);
     if (!b) return;
     // Keine nachgemachten Mausklicks, nichts darunter reagiert – offene Menüs schließen deshalb hier
     e.preventDefault();
     e.stopPropagation();
+    // Menü dieses Blocks gerade offen? Dann nur schließen
+    const wasOpen = !!menuFor && menuFor.id === b.id && menuFor.pop && !menuFor.pop.closed;
     closeAllPopovers();
     const shown = handle.classList.contains('show') && hoverBlock === b;
     hoverBlock = b;
     place(b);
     touchGrab = true;
-    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, type: e.pointerType, menu: shown });
+    // Alle weiteren Ereignisse dieser Berührung hierher – auch wenn das berührte
+    // Element unterwegs neu gezeichnet wird
+    try { d.setPointerCapture(e.pointerId); } catch { /* egal */ }
+    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen, type: e.pointerType });
   }, true);
   // Solange der Griff gehalten wird: kein Scrollen, keine Handschrift-Erkennung
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });

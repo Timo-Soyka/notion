@@ -308,7 +308,7 @@ function ipadPage(app, save) {
     change.addEventListener('click', () => call('mirror.reset'));
     return [
       h('h3', { text: 'Abgleich mit dem Mac' }),
-      h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund).' }),
+      h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac sofort in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund). Es gilt immer die zuletzt gespeicherte Fassung; Kopien wie „… (iPad)“ entstehen nicht mehr.' }),
       h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change)),
       h('h3', { text: 'Eingabe' }),
       row('Mathe-Tastatur', 'Beim Tippen in eine Formel (auch in Graphen) erscheint statt der normalen Bildschirmtastatur eine eigene Tastatur mit Bruch, Wurzel, Hochzahl, Funktionen, Integralen, griechischen Buchstaben und Einheiten. Mit ⌄ lässt sie sich einklappen, etwa wenn eine Hardware-Tastatur angeschlossen ist.',
@@ -319,7 +319,7 @@ function ipadPage(app, save) {
   }
   return [
     h('h3', { text: 'iPad' }),
-    h('p', { class: 'desc', text: 'Heft auf dem iPad arbeitet mit einer Kopie deiner Einträge in iCloud Drive (Ordner „Heft“). Was du auf dem iPad änderst, trägt Heft hier in DEVONthink ein. Haben Mac und iPad denselben Eintrag geändert, landet die iPad-Fassung als „… (iPad)“ daneben – es geht nichts verloren.' }),
+    h('p', { class: 'desc', text: 'Heft auf dem iPad arbeitet mit einer Kopie deiner Einträge in iCloud Drive (Ordner „Heft“). Was du auf dem iPad änderst, trägt Heft hier sofort in DEVONthink ein. Es gilt immer die zuletzt gespeicherte Fassung – egal ob vom Mac oder vom iPad.' }),
     row('Abgleich mit dem iPad', 'Legt die Kopie in iCloud Drive an und hält sie aktuell. Heft läuft dann beim Schließen des Fensters im Hintergrund weiter (beenden mit ⌘Q).', sw(s.ipadSync, async (v) => { await save({ ipadSync: v }); refresh(); })),
     h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, now)),
     row('Beim Anmelden starten', 'Heft startet mit dem Mac, damit Änderungen vom iPad auch ohne geöffnetes Fenster ankommen.', login)

@@ -25,7 +25,7 @@ import { table, emptyTable, tableMenu } from './blocks/table.js';
 import { SlashMenu } from './slash.js';
 import { FormatBar, openInlineMath, openFootnote, openLinkPopover, linkHover } from './format.js';
 import { runInputRules } from './rules.js';
-import { attachClipboard } from './clipboard.js';
+import { attachClipboard, putBlocks } from './clipboard.js';
 import { attachDnd } from './dnd.js';
 import { uuidFromLink, assetURL, assetVersion, isPad } from '../bridge.js';
 import { normalizeMathSyntax, markColor, markName } from '../core/mathlines.js';
@@ -928,18 +928,46 @@ export class Editor {
     this.selHead = blocks[blocks.length - 1].id;
     this.docEl.classList.add('block-sel');
     this.docEl.focus({ preventScroll: true });
-    // Unsichtbare Textauswahl über die Blöcke legen, damit ⌘C/⌘X im
-    // WebView überhaupt ein copy-Ereignis auslösen.
-    const first = this.elOf(blocks[0]), last = this.elOf(blocks[blocks.length - 1]);
-    if (first && last) {
-      const r = document.createRange();
-      r.setStartBefore(first);
-      r.setEndAfter(last);
-      const s = window.getSelection();
-      s.removeAllRanges();
-      s.addRange(r);
-    }
+    // Am Mac: unsichtbare Textauswahl über die Blöcke, damit ⌘C/⌘X im WebView
+    // überhaupt ein copy-Ereignis auslösen. Auf dem iPad nicht – dort holt
+    // iPadOS zu jeder Textauswahl eigene Anfasser, Menüs und Ziehgesten hervor,
+    // die Berührungen am Griff ⋮⋮ abfangen. Die Auswahl entsteht dort erst
+    // beim Kopieren (copyBlocks, ⌘C/⌘X).
+    if (isPad) window.getSelection().removeAllRanges();
+    else this.rangeOverBlocks(blocks);
     this.format && this.format.hide();
+  }
+
+  rangeOverBlocks(blocks) {
+    const first = this.elOf(blocks[0]), last = this.elOf(blocks[blocks.length - 1]);
+    if (!first || !last) return false;
+    const r = document.createRange();
+    r.setStartBefore(first);
+    r.setEndAfter(last);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    return true;
+  }
+
+  // Blöcke über das Menü kopieren/ausschneiden (iPad ohne Tastatur): kurz
+  // auswählen und das normale Kopieren auslösen – clipboard.js füllt dann
+  // die Zwischenablage wie bei ⌘C
+  copyBlocks(blocks, cut = false) {
+    this.syncAll();
+    this.selectBlocks(blocks);
+    // Ohne Textauswahl gibt WebKit das Kopieren gar nicht erst frei
+    this.rangeOverBlocks(blocks);
+    let filled = false;
+    const fill = (e) => { e.preventDefault(); e.heftDone = true; putBlocks(e.clipboardData, blocks); filled = true; };
+    document.addEventListener('copy', fill, true);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    document.removeEventListener('copy', fill, true);
+    window.getSelection().removeAllRanges();
+    if (!ok || !filled) { UI.toast('Kopieren ist hier nicht möglich', { type: 'error' }); return; }
+    if (cut) this.deleteBlocks(blocks);
+    else UI.toast(blocks.length > 1 ? `${blocks.length} Blöcke kopiert` : 'Block kopiert', { type: 'success', timeout: 1500 });
   }
 
   clearBlockSelection() {
@@ -1533,7 +1561,7 @@ export class Editor {
     const outside = (e) => {
       if (!this.activeAtom) return;
       const el = this.elOf(this.activeAtom);
-      if (el && !el.contains(e.target) && !e.target.closest('.popover, .overlay, .tooltip, .math-kbd, .math-kbd-show')) this.deactivate();
+      if (el && !el.contains(e.target) && !e.target.closest('.popover, .overlay, .tooltip, .math-kbd, .math-kbd-show, .math-kbd-text')) this.deactivate();
     };
     document.addEventListener('mousedown', outside, true);
     const selKey = (e) => this.onDocumentKey(e);
@@ -1618,6 +1646,12 @@ export class Editor {
     }
     if (k === 'Tab') { e.preventDefault(); if (e.shiftKey) this.outdent(blocks); else this.indent(blocks); this.selectBlocks(blocks); return; }
     if (m && k.toLowerCase() === 'd') { e.preventDefault(); this.duplicate(blocks); return; }
+    // iPad: Auswahl für ⌘C/⌘X erst jetzt anlegen (siehe selectBlocks); das Kopieren selbst macht WebKit
+    if (isPad && m && (k.toLowerCase() === 'c' || k.toLowerCase() === 'x')) {
+      this.rangeOverBlocks(blocks);
+      setTimeout(() => { if (document.activeElement === this.docEl) window.getSelection().removeAllRanges(); }, 0);
+      return;
+    }
     if (m && e.shiftKey && (k === 'ArrowUp' || k === 'ArrowDown')) { e.preventDefault(); this.moveUpDown(blocks, k === 'ArrowUp' ? -1 : 1); this.selectBlocks(blocks); return; }
     if (m && k.toLowerCase() === 'a') { e.preventDefault(); this.selectBlocks(this.doc.blocks); return; }
     if (m && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? this.redo() : this.undo(); return; }
@@ -1909,7 +1943,7 @@ export class Editor {
     }))]);
   }
 
-  openBlockMenu(b, anchor) {
+  openBlockMenu(b, anchor, opts = {}) {
     const blocks = this.selected.has(b.id) ? this.selectedBlocks() : [b];
     if (!this.selected.has(b.id)) this.selectBlocks([b]);
     const turnInto = [
@@ -1925,6 +1959,8 @@ export class Editor {
       { section: blocks.length > 1 ? `${blocks.length} Blöcke` : blockLabel(b) },
       { label: 'Löschen', icon: 'trash', hint: '⌫', onSelect: () => this.deleteBlocks(blocks) },
       { label: 'Duplizieren', icon: 'copy', hint: '⌘D', onSelect: () => this.duplicate(blocks) },
+      isPad ? { label: 'Kopieren', icon: 'copy', hint: '⌘C', onSelect: () => this.copyBlocks(blocks) } : null,
+      isPad ? { label: 'Ausschneiden', icon: 'scissors', hint: '⌘X', onSelect: () => this.copyBlocks(blocks, true) } : null,
       blocks.every(x => this.isText(x)) ? { label: 'Umwandeln in', icon: 'turn', submenu: turnInto } : null,
       blocks.length === 1 && (/^h[123]$/.test(b.type) || b.type === 'ol') ? { label: 'Nummer', icon: 'hash', submenu: this.numberMenuItems(b) } : null,
       blocks.length > 1 ? { label: 'Nebeneinander anordnen', icon: 'columns', onSelect: () => this.arrangeSideBySide(blocks) } : null,
@@ -1953,7 +1989,7 @@ export class Editor {
       items.push({ label: 'In DEVONthink zeigen', icon: 'database', onSelect: () => this.host.revealLink(b.src) });
       if (b.type === 'pdf') items.push({ label: 'Im PDF-Editor öffnen', icon: 'pencil', onSelect: () => this.host.openPDF(uuidFromLink(b.src), b.id) });
     }
-    UI.menu(anchor, items);
+    return UI.menu(anchor, items, opts);
   }
 }
 

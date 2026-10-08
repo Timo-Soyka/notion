@@ -67,12 +67,28 @@ export function popover(anchor, content, opts = {}) {
   let closed = false;
   const onDown = (e) => {
     if (el.contains(e.target)) return;
-    // Mathe-Tastatur (iPad) gehört zum Formelfeld im Popover
-    if (e.target.closest && e.target.closest('.math-kbd, .math-kbd-show')) return;
+    // Mathe-Tastatur und ihr Textfeld (iPad) gehören zum Formelfeld im Popover
+    if (e.target.closest && e.target.closest('.math-kbd, .math-kbd-show, .math-kbd-text')) return;
     if (opts.keepOn && opts.keepOn.some(k => k && k.contains && k.contains(e.target))) return;
+    if (opts.keep && opts.keep(e)) return;
     api.close();
   };
+  // Finger und Pencil (iPad): Antippen daneben schließt. Nachgemachte Mausklicks
+  // schickt iPadOS nicht immer (z. B. wenn das Antippen erst Knöpfe einblendet) –
+  // das Menü bliebe sonst offen stehen. Wischen (Scrollen) und ein aufliegender
+  // Handballen schließen nicht.
+  let touch = null;
+  const onPointer = (e) => { touch = e.pointerType === 'mouse' ? null : { e, x: e.clientX, y: e.clientY, at: performance.now() }; };
+  const onPointerUp = (e) => {
+    const t = touch;
+    touch = null;
+    if (!t || e.pointerId !== t.e.pointerId) return;
+    if (Math.hypot(e.clientX - t.x, e.clientY - t.y) > 10 || performance.now() - t.at > 600) return;
+    onDown(t.e);
+  };
   const onKey = (e) => {
+    // Escape im Textfeld der Mathe-Tastatur gilt dem Textfeld, nicht dem Formel-Fenster
+    if (e.target && e.target.closest && e.target.closest('.math-kbd-text')) return;
     if (e.key === 'Escape' && openPopovers[openPopovers.length - 1] === api) {
       e.preventDefault();
       e.stopPropagation();
@@ -86,6 +102,8 @@ export function popover(anchor, content, opts = {}) {
       closed = true;
       el.remove();
       document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('pointerup', onPointerUp, true);
       document.removeEventListener('keydown', onKey, true);
       const i = openPopovers.indexOf(api);
       if (i >= 0) openPopovers.splice(i, 1);
@@ -97,6 +115,8 @@ export function popover(anchor, content, opts = {}) {
   setTimeout(() => {
     if (closed) return;
     document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('pointerdown', onPointer, true);
+    document.addEventListener('pointerup', onPointerUp, true);
   }, 0);
   document.addEventListener('keydown', onKey, true);
   openPopovers.push(api);

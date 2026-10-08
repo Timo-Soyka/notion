@@ -5,8 +5,11 @@
 // Rechenzeichen, Bruch, Wurzel, Hochzahl, Funktionen, Integrale, griechische
 // Buchstaben, Einheiten und die Heft-Besonderheiten (Ausrichtungspunkt,
 // Kommandostrich). Die Tasten nehmen dem Formelfeld nie den Fokus weg.
+// „Text“ öffnet für Wörter ein eigenes Eingabefeld mit der normalen
+// iPad-Tastatur (auch mit gekoppeltem Pencil); „Einfügen“ setzt sie in die Formel.
 
 import { h } from '../ui/ui.js';
+import { call } from '../bridge.js';
 import { renderToString } from './render/katex.js';
 import { icon } from '../ui/icons.js';
 
@@ -36,6 +39,18 @@ const LAYERS = [
     ]
   },
   {
+    id: 'mengen', label: 'Mengen', rows: [
+      [ins('ℕ', '\\mathbb{N}', { t: '\\mathbb{N}' }), ins('ℕ₀', '\\mathbb{N}_0', { t: '\\mathbb{N}_0' }), ins('ℤ', '\\mathbb{Z}', { t: '\\mathbb{Z}' }), ins('ℚ', '\\mathbb{Q}', { t: '\\mathbb{Q}' }), ins('ℝ', '\\mathbb{R}', { t: '\\mathbb{R}' }),
+        ins('ℝ⁺', '\\mathbb{R}^+', { t: '\\mathbb{R}^+' }), ins('ℝ₀⁺', '\\mathbb{R}_0^+', { t: '\\mathbb{R}_0^+' }), ins('ℝ⁻', '\\mathbb{R}^-', { t: '\\mathbb{R}^-' }), ins('ℂ', '\\mathbb{C}', { t: '\\mathbb{C}' }), ins('𝕃', '\\mathbb{L}', { t: '\\mathbb{L}' })],
+      [ins('∈', '\\in ', { t: '\\in' }), ins('∉', '\\notin ', { t: '\\notin' }), ins('⊂', '\\subset ', { t: '\\subset' }), ins('⊆', '\\subseteq ', { t: '\\subseteq' }), ins('⊄', '\\not\\subset ', { t: '\\not\\subset' }),
+        ins('∪', '\\cup ', { t: '\\cup' }), ins('∩', '\\cap ', { t: '\\cap' }), ins('ohne ∖', '\\setminus ', { t: '\\setminus' }), ins('∅', '\\emptyset ', { t: '\\emptyset' }), ins('{ }', `\\left\\{${P}\\right\\}`, { t: '\\{\\square\\}' })],
+      [ins('[a;b]', `\\left[${P};${P}\\right]`, { t: '[a;b]' }), ins(']a;b[', `\\left]${P};${P}\\right[`, { t: ']a;b[' }), ins('[a;b[', `\\left[${P};${P}\\right[`, { t: '[a;b[' }), ins(']a;b]', `\\left]${P};${P}\\right]`, { t: ']a;b]' }),
+        ins('{x | …}', `\\left\\{${P}\\mid ${P}\\right\\}`, { t: '\\{x\\mid\\ldots\\}' }), ins('D =', 'D=', { t: 'D=' }), ins('Dƒ =', 'D_{f}=', { t: 'D_f=' }), ins('Wƒ =', 'W_{f}=', { t: 'W_f=' }), ins('𝕃 =', '\\mathbb{L}=', { t: '\\mathbb{L}=' }), ins('∞', '\\infty ', { t: '\\infty' })],
+      [ins('∀', '\\forall ', { t: '\\forall' }), ins('∃', '\\exists ', { t: '\\exists' }), ins('¬', '\\neg ', { t: '\\neg' }), ins('∧', '\\land ', { t: '\\land' }), ins('∨', '\\lor ', { t: '\\lor' }),
+        ins('⇒', '\\Rightarrow ', { t: '\\Rightarrow' }), ins('⇔', '\\Leftrightarrow ', { t: '\\Leftrightarrow' }), ins('|', '\\mid ', { t: '\\mid' }), ins('×', '\\times ', { t: '\\times' }), ins('ℝ²', '\\mathbb{R}^2', { t: '\\mathbb{R}^2' })]
+    ]
+  },
+  {
     id: 'symbole', label: 'αβγ', rows: [
       ['alpha', 'beta', 'gamma', 'delta', 'varepsilon', 'lambda', 'mu', 'varphi', 'omega', 'pi'].map(n => ins(n, `\\${n} `, { t: `\\${n}` })),
       ['Delta', 'Sigma', 'Omega', 'theta', 'rho', 'sigma', 'tau', 'eta', 'Phi', 'Lambda'].map(n => ins(n, `\\${n} `, { t: `\\${n}` })),
@@ -47,8 +62,9 @@ const LAYERS = [
     id: 'abc', label: 'abc', rows: [
       'qwertzuiop'.split('').map(ch => typ(ch, ch, { c: 'var' })),
       'asdfghjkl'.split('').map(ch => typ(ch, ch, { c: 'var' })),
-      [k('⇧', { act: 'shift', c: 'mod' }), ...'yxcvbnm'.split('').map(ch => typ(ch, ch, { c: 'var' })), k('Text', { act: 'text', c: 'mod' })],
-      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }')]
+      [k('⇧', { act: 'shift', c: 'mod' }), ...'yxcvbnm'.split('').map(ch => typ(ch, ch, { c: 'var' })), k('Text', { act: 'system', c: 'mod' })],
+      [k('Leerzeichen', { act: 'space', w: 4 }), ins('„für“', '\\text{ für }'), ins('„und“', '\\text{ und }'), ins('„oder“', '\\text{ oder }'),
+        ins('ohne', '\\setminus ', { t: '\\setminus' }), k('\\', { act: 'latex', c: 'mod' })]
     ]
   },
   {
@@ -75,8 +91,13 @@ const isMF = (el) => el && el.matches && el.matches('math-field.heft-mf');
 
 export function installMathKeyboard() {
   document.addEventListener('focusin', (e) => {
+    if (!enabled) return;
     const mf = e.target && e.target.closest && e.target.closest('math-field.heft-mf');
-    if (mf && enabled) { clearTimeout(hideTimer); show(mf); }
+    clearTimeout(hideTimer);
+    // Fokus woanders hin (z. B. Formel im Text mit ↵ übernommen – dann kommt
+    // kein focusout, weil das Feld einfach verschwindet): Tastatur weg
+    if (!mf) { hide(); return; }
+    show(mf);
   }, true);
   document.addEventListener('focusout', () => {
     clearTimeout(hideTimer);
@@ -89,6 +110,81 @@ export function installMathKeyboard() {
 }
 
 function sinkOf(mf) { return mf && mf.shadowRoot && mf.shadowRoot.querySelector('.ML__keyboard-sink'); }
+
+// „Text“: Wörter mit der normalen iPad-Tastatur in ein eigenes Eingabefeld
+// schreiben, „Einfügen“ (oder ↵) setzt sie als Text in die Formel. Ein echtes
+// Eingabefeld ist auf dem iPad verlässlich – Tastatur, Autokorrektur und
+// Handschrift mit dem Pencil (Scribble) funktionieren dort wie überall. Im
+// Formelfeld selbst würde iPadOS Wörter auseinandernehmen (Vorschläge,
+// Einheiten-Erkennung, Kürzel).
+let textBar = null;
+
+// Text für \text{…}: Zeichen mit Sonderbedeutung als Textbefehle (die übersteht
+// MathLive unverändert; \^{} würde zum Akzent, \$ bräche Formeln im Text)
+const TEXT_ESC = { '\\': '\\textbackslash{}', '^': '\\textasciicircum{}', '~': '\\textasciitilde{}', '$': '\\textdollar{}' };
+function escapeText(s) {
+  return s.replace(/[\\{}$%#&_^~]/g, c => TEXT_ESC[c] || '\\' + c);
+}
+
+function openTextBar(mf) {
+  if (!mf || !mf.isConnected) return;
+  closeTextBar(false);
+  // Halb getippten \-Befehl erst abschließen, sonst ginge er verloren
+  if (mf.mode === 'latex') { mf.executeCommand(['complete', 'accept-all']); changed(mf); }
+  const sel = mf.selection;   // Einfügemarke merken – das Feld verliert gleich den Fokus
+  const input = h('input', {
+    class: 'mk-text-input', type: 'text', placeholder: 'Text für die Formel – z. B. für alle oder Meter',
+    autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false',
+    enterkeyhint: 'done', 'aria-label': 'Text für die Formel'
+  });
+  const ok = h('button', { class: 'btn primary', type: 'button' }, 'Einfügen');
+  const cancel = h('button', { class: 'btn outline', type: 'button' }, 'Abbrechen');
+  const bar = h('div', { class: 'math-kbd-text' }, h('span', { class: 'mk-text-label', text: 'Text' }), input, ok, cancel);
+  const finish = (insert, back = true) => {
+    if (!textBar || textBar.bar !== bar) return;
+    textBar = null;
+    window.removeEventListener('pointerdown', outsideDown, true);
+    window.removeEventListener('pointerup', outsideUp, true);
+    const txt = input.value.trim();
+    bar.remove();
+    if (!mf.isConnected) return;
+    if (insert && txt) {
+      try { if (sel) mf.selection = sel; } catch { /* egal */ }
+      mf.insert(`\\text{ ${escapeText(txt)} }`, { format: 'latex', mode: 'math', selectionMode: 'after' });
+      // Danach als Formel weiterschreiben (MathLive bliebe sonst hinter dem Text im Textmodus)
+      if (mf.mode === 'text') mf.executeCommand(['switchMode', 'math']);
+      changed(mf);
+    }
+    if (back) mf.focus();
+  };
+  // Woanders hingetippt: Geschriebenes trotzdem übernehmen – vor allem anderen,
+  // sonst ist die Formel womöglich schon geschlossen. Nur beim echten Antippen,
+  // nicht beim Wischen (Scrollen) oder durch einen aufliegenden Handballen.
+  let down = null;
+  const outsideDown = (e) => { down = bar.contains(e.target) ? null : { id: e.pointerId, x: e.clientX, y: e.clientY, at: performance.now() }; };
+  const outsideUp = (e) => {
+    const d = down;
+    down = null;
+    if (!d || e.pointerId !== d.id || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10 || performance.now() - d.at > 600) return;
+    finish(true, false);
+  };
+  for (const b of [ok, cancel]) b.addEventListener('pointerdown', (e) => e.preventDefault());
+  ok.addEventListener('click', () => finish(true));
+  cancel.addEventListener('click', () => finish(false));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  document.body.append(bar);
+  textBar = { bar, finish };
+  window.addEventListener('pointerdown', outsideDown, true);
+  window.addEventListener('pointerup', outsideUp, true);
+  // Tastatur ausdrücklich erlauben – auch wenn „Text“ mit dem Pencil getippt wurde
+  call('keyboard.allow').catch(() => { /* nur in der iPad-App */ });
+  input.focus();
+}
+
+function closeTextBar(insert) { if (textBar) textBar.finish(insert, false); }
 
 // Echte Taste nachmachen (Rücktaste, Pfeile, Tab, Enter) – so greifen auch Heft-Sonderfälle
 let pressing = null, lastBack = 0;
@@ -113,8 +209,15 @@ function apply(spec, repeated = false) {
   const mf = field;
   if (!mf || !mf.isConnected) return;
   if (spec.act === 'shift') { shift = !shift; render(); return; }
-  // „Text“ schaltet zwischen normalem Text und Formel um
-  if (spec.act === 'text') { mf.executeCommand(['switchMode', mf.mode === 'text' ? 'math' : 'text']); markMode(); return; }
+  if (spec.act === 'system') { openTextBar(mf); return; }
+  // \ wie auf einer echten Tastatur: LaTeX-Befehl eintippen (\alpha …);
+  // Leerzeichen, Zeile oder Kästchen übernehmen ihn
+  if (spec.act === 'latex') { mf.executeCommand(['switchMode', 'latex', '', '\\']); return; }
+  if (mf.mode === 'latex' && (spec.act === 'space' || spec.key === 'Enter' || spec.key === 'Tab')) {
+    mf.executeCommand(['complete', 'accept-all']);
+    changed(mf);
+    return;
+  }
   if (spec.act === 'space') {
     if (mf.mode === 'text') mf.executeCommand(['typedText', ' ']); else mf.insert('\\;', { format: 'latex', selectionMode: 'after' });
     changed(mf);
@@ -191,7 +294,10 @@ function bindKey(b, fn, repeat = false) {
 function build() {
   panel = h('div', { class: 'math-kbd' });
   showBtn = h('button', { class: 'math-kbd-show', type: 'button', text: '∑ Mathe-Tastatur' });
-  bindKey(showBtn, () => { collapsed = false; save(); show(field); });
+  bindKey(showBtn, () => {
+    if (!field || !field.isConnected) { hide(); return; }
+    collapsed = false; save(); show(field);
+  });
   // iPadOS soll Berührungen hier nicht als Geste deuten (Doppeltippen, Lupe,
   // Zoomen, Wischen) – sonst gehen bei schnellem Tippen Tasten verloren.
   // Die Pointer-Ereignisse für die Tasten kommen trotzdem.
@@ -205,16 +311,19 @@ function render() {
   if (!panel) build();
   panel.innerHTML = '';
   const top = h('div', { class: 'mk-top' });
+  // Reiter dürfen seitlich scrollen (iPad mini hochkant) – „Fertig“ bleibt immer sichtbar
+  const tabs = h('div', { class: 'mk-tabs' });
   for (const L of LAYERS) {
     const tab = h('button', { class: 'mk-tab' + (L.id === layer ? ' on' : ''), type: 'button', text: L.label });
     bindKey(tab, () => { layer = L.id; shift = false; render(); });
-    top.append(tab);
+    tabs.append(tab);
   }
-  top.append(h('span', { class: 'grow' }));
+  top.append(tabs);
   const tool = (label, fn, cls = '', html = '') => { const b = h('button', { class: 'mk-tool ' + cls, type: 'button', text: label }); if (html) b.innerHTML = html; bindKey(b, fn); top.append(b); return b; };
   tool('', () => field && field.executeCommand('undo'), '', icon('undo', 'sm')).setAttribute('aria-label', 'Rückgängig');
   tool('', () => field && field.executeCommand('redo'), '', icon('redo', 'sm')).setAttribute('aria-label', 'Wiederholen');
-  tool('Einklappen', () => { collapsed = true; save(); show(field); });
+  tool('Text', () => openTextBar(field), '', '').setAttribute('aria-label', 'Normale Tastatur');
+  tool('', () => { collapsed = true; save(); show(field); }, '', icon('chevronDown', 'sm')).setAttribute('aria-label', 'Einklappen');
   tool('Fertig', () => {
     const ed = window.heftApp && window.heftApp.editor;
     if (ed && ed.activeAtom) ed.deactivate();
@@ -239,6 +348,7 @@ function render() {
 function show(mf) {
   field = mf || field;
   if (!panel) build();
+  // Eingeklappt (Hardware-Tastatur): nur der Knopf zum Zurückholen
   if (collapsed) {
     panel.classList.remove('open');
     showBtn.classList.add('open');
