@@ -96,6 +96,22 @@ export class PDFView {
     if (st.page) this.updatePageInfo(st.page, st.pages || this.pages);
     if (st.saved !== undefined) this.app.setSaveState(st.saving ? 'saving' : st.dirty ? 'dirty' : 'saved');
     if (st.tool) this.setTool(st.tool, true);
+    if (st.palette) this.showPalette(st.palette);
+  }
+
+  // Apple Pencil (Doppeltippen/Drücken, je nach iPad-Einstellung): Farben oder
+  // Strichstärke zur Auswahl. Hat das Werkzeug keine, gilt die Wahl dem Stift.
+  showPalette(kind) {
+    if (kind === 'width') {
+      if (this.widthBtn.style.display === 'none') this.setTool('pen');
+      this.widthBtn.click();
+      return;
+    }
+    const hl = this.tool === 'highlight';
+    if (!hl && this.colorRow.style.display === 'none') this.setTool('pen');
+    const row = hl ? this.hlRow : this.colorRow, list = hl ? HIGHLIGHTS : COLORS, current = hl ? this.hlColor : this.color;
+    const swatches = [...row.querySelectorAll('.swatch')];
+    menu(row, list.map(([c, name], i) => ({ label: name, checked: c === current, onSelect: () => swatches[i].click() })));
   }
 
   updatePageInfo(page, pages) {

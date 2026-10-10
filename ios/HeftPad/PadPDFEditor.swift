@@ -86,16 +86,30 @@ final class PadPDFEditor: UIView, UIPencilInteractionDelegate {
         pdfView.toolChanged()
     }
 
-    // Doppeltippen auf den Apple Pencil – so, wie es in den Einstellungen gewählt ist
+    // Doppeltippen auf den Apple Pencil und Drücken (Apple Pencil Pro) – so, wie
+    // es in den iPad-Einstellungen unter „Apple Pencil“ gewählt ist
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
-        let next: String
-        switch UIPencilInteraction.preferredTapAction {
-        case .ignore: return
-        case .switchPrevious: next = previousTool
-        default: next = tool == "eraser" ? lastDrawingTool : "eraser"
+        perform(UIPencilInteraction.preferredTapAction)
+    }
+
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+        guard squeeze.phase == .ended else { return }
+        perform(UIPencilInteraction.preferredSqueezeAction)
+    }
+
+    private func perform(_ action: UIPencilPreferredAction) {
+        switch action {
+        case .switchEraser: use(tool == "eraser" ? lastDrawingTool : "eraser")
+        case .switchPrevious: use(previousTool)
+        // Farben bzw. Strichstärke zeigt die Werkzeugleiste der Oberfläche
+        case .showColorPalette, .showContextualPalette:
+            host?.emit("pdf-state", ["uuid": uuid, "palette": "color"]); return
+        case .showInkAttributes:
+            host?.emit("pdf-state", ["uuid": uuid, "palette": "width"]); return
+        // „Ignorieren“ und „Kurzbefehl ausführen“ (das macht iPadOS selbst)
+        default: return
         }
-        use(next)
-        host?.emit("pdf-state", ["uuid": uuid, "tool": next])
+        host?.emit("pdf-state", ["uuid": uuid, "tool": tool])
     }
 
     // MARK: - Anmerkungen hinzufügen/entfernen (mit Rückgängig)
