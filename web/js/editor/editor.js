@@ -57,6 +57,7 @@ export class Editor {
     this.print = !!opts.print;
     this.onChange = opts.onChange || (() => {});
     this.onTitleChange = opts.onTitleChange || (() => {});
+    this.onHistory = opts.onHistory || (() => {});
     this.settings = opts.settings || {};
     this.ui = { menu: UI.menu, popover: UI.popover, toast: UI.toast, prompt: UI.promptDialog, confirm: UI.confirmDialog, dialog: UI.dialog };
     this.els = new Map();
@@ -128,6 +129,7 @@ export class Editor {
     if (!this.doc.blocks.length && !this.readonly) this.doc.blocks.push(block('p'));
     this.undoStack = [];
     this.redoStack = [];
+    this.onHistory();
     this.selected.clear();
     this.activeAtom = null;
     this.applyMeta();
@@ -1470,6 +1472,7 @@ export class Editor {
     this.undoStack.push(s);
     if (this.undoStack.length > 300) this.undoStack.shift();
     this.redoStack = [];
+    this.onHistory();
   }
 
   typingCheckpoint(id) {
@@ -1487,6 +1490,7 @@ export class Editor {
     while (s && s.blocks === cur.blocks && s.meta === cur.meta && this.undoStack.length) s = this.undoStack.pop();
     this.redoStack.push(cur);
     this.restore(s);
+    this.onHistory();
   }
 
   redo() {
@@ -1494,7 +1498,11 @@ export class Editor {
     this.deactivate();
     this.undoStack.push(this.snapshot());
     this.restore(this.redoStack.pop());
+    this.onHistory();
   }
+
+  canUndo() { return this.undoStack.length > 0; }
+  canRedo() { return this.redoStack.length > 0; }
 
   restore(s) {
     if (!s) return;
