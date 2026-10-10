@@ -1,6 +1,6 @@
 // Einstellungen und Ersteinrichtung.
 
-import { h, esc, dialog, toast, menu } from '../ui/ui.js';
+import { h, esc, dialog, toast, menu, confirmDialog } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
 import { call, isNative, isPad } from '../bridge.js';
 import { headingNumbers, listLabel, HEADING_STYLES, LIST_STYLES, ENTRY_FORMATS } from '../core/numbering.js';
@@ -298,6 +298,20 @@ function ipadPage(app, save) {
     now.disabled = false;
     refresh();
   });
+  const tidy = h('button', { class: 'btn sm outline' }, 'Aufräumen …');
+  tidy.addEventListener('click', async () => {
+    const ok = await confirmDialog('Alte iPad-Kopien aufräumen?',
+      'Pro Eintrag bleibt nur die neueste Fassung. Ist eine „(iPad)“-Kopie neuer als der Eintrag, übernimmt der Eintrag ihren Inhalt (mit Sicherung). Die Kopien wandern in den Papierkorb von DEVONthink.',
+      { confirm: 'Aufräumen', danger: true });
+    if (!ok) return;
+    tidy.disabled = true;
+    try {
+      const r = await call('sync.cleanup');
+      toast(r && r.trashed ? `${r.trashed} alte Kopie(n) bei ${r.entries} Eintrag/Einträgen in den Papierkorb gelegt.` : 'Keine alten iPad-Kopien gefunden.', { type: 'success' });
+    } catch (e) { toast('Aufräumen fehlgeschlagen: ' + e.message, { type: 'error' }); }
+    tidy.disabled = false;
+    refresh();
+  });
   const login = sw(false, async (v) => {
     try { await call('app.loginItem', { enabled: v }); } catch (e) { toast('Nicht möglich: ' + e.message, { type: 'error' }); }
     refresh();
@@ -322,6 +336,7 @@ function ipadPage(app, save) {
     h('p', { class: 'desc', text: 'Heft auf dem iPad arbeitet mit einer Kopie deiner Einträge in iCloud Drive (Ordner „Heft“). Was du auf dem iPad änderst, trägt Heft hier sofort in DEVONthink ein. Es gilt immer die zuletzt gespeicherte Fassung – egal ob vom Mac oder vom iPad.' }),
     row('Abgleich mit dem iPad', 'Legt die Kopie in iCloud Drive an und hält sie aktuell. Heft läuft dann beim Schließen des Fensters im Hintergrund weiter (beenden mit ⌘Q).', sw(s.ipadSync, async (v) => { await save({ ipadSync: v }); refresh(); })),
     h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, now)),
+    row('Alte iPad-Kopien', 'Entfernt „(iPad)“-Kopien aus früheren Versionen: Pro Eintrag bleibt nur die neueste Fassung, die übrigen wandern in den Papierkorb von DEVONthink.', tidy),
     row('Beim Anmelden starten', 'Heft startet mit dem Mac, damit Änderungen vom iPad auch ohne geöffnetes Fenster ankommen.', login)
   ];
 }
