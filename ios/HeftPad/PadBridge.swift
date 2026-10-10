@@ -513,6 +513,23 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
                 }
             }
 
+        case "dttg.probe":
+            // Prüfung für den Abgleich ohne Mac: DEVONthink-To-Go-Datenbank wählen und Bericht zeigen
+            DispatchQueue.main.async {
+                guard let vc = self.host?.presenter else { reply(.success(false)); return }
+                ProbeFolderPicker.pick(from: vc) { url in
+                    guard let url else { reply(.success(false)); return }
+                    self.work.async {
+                        let text = DTTGProbe.run(folder: url)
+                        DispatchQueue.main.async {
+                            let nav = UINavigationController(rootViewController: ProbeReportController(text: text))
+                            vc.present(nav, animated: true)
+                            reply(.success(true))
+                        }
+                    }
+                }
+            }
+
         case "sync.info":
             bg(reply) { ["enabled": true, "label": self.syncLabel(), "pending": self.store.pendingCount] }
 

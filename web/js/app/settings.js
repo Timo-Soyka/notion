@@ -319,11 +319,14 @@ function ipadPage(app, save) {
   refresh();
   if (isPad) {
     const change = h('button', { class: 'btn sm outline' }, 'Anderen Ordner wählen …');
+    const probe = h('button', { class: 'btn sm outline' }, 'Prüfen …');
+    probe.addEventListener('click', () => call('dttg.probe').catch(e => toast('Prüfung fehlgeschlagen: ' + e.message, { type: 'error' })));
     change.addEventListener('click', () => call('mirror.reset'));
     return [
       h('h3', { text: 'Abgleich mit dem Mac' }),
       h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac sofort in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund). Es gilt immer die zuletzt gespeicherte Fassung; Kopien wie „… (iPad)“ entstehen nicht mehr.' }),
       h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change)),
+      row('DEVONthink To Go', 'Prüft, ob Heft deine DEVONthink-To-Go-Datenbank über die Dateien-App direkt lesen und beschreiben kann (Abgleich ohne Mac). Legt dafür kurz eine Probedatei an und löscht sie wieder.', probe),
       h('h3', { text: 'Eingabe' }),
       row('Mathe-Tastatur', 'Beim Tippen in eine Formel (auch in Graphen) erscheint statt der normalen Bildschirmtastatur eine eigene Tastatur mit Bruch, Wurzel, Hochzahl, Funktionen, Integralen, griechischen Buchstaben und Einheiten. Mit ⌄ lässt sie sich einklappen, etwa wenn eine Hardware-Tastatur angeschlossen ist.',
         sw(s.mathKeyboard !== false, (v) => save({ mathKeyboard: v }))),
