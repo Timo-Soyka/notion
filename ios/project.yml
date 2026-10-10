@@ -16,6 +16,13 @@ targets:
       - path: ../web
         type: folder
         buildPhase: resources
+    # Eigenes URL-Schema: Rücksprung vom Kurzbefehl „Heft-Abgleich“ (heftpad://dttg/…)
+    info:
+      path: HeftPad/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: de.timo.heft.ipad
+            CFBundleURLSchemes: [heftpad]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.timo.heft.ipad
