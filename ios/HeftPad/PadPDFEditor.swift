@@ -53,6 +53,9 @@ final class PadPDFEditor: UIView, UIPencilInteractionDelegate {
         let pencil = UIPencilInteraction()
         pencil.delegate = self
         addInteraction(pencil)
+        let watcher = PencilWatcher()
+        watcher.onPencilDown = { [weak self] in self?.pdfView.pencilDown() }
+        addGestureRecognizer(watcher)
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(appResigned), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -351,18 +354,80 @@ final class PadPDFEditor: UIView, UIPencilInteractionDelegate {
 
 // MARK: - Stift-Geste
 
+// Ob und wann zuletzt mit dem Apple Pencil geschrieben wurde – für die
+// Handballen-Erkennung. Wer den Pencil benutzt, zeichnet nicht mit dem Finger:
+// Berührungen mit dem Finger zeichnen dann nie, und solange der Pencil auf dem
+// Blatt ist (und kurz danach) lösen sie auch sonst nichts aus.
+enum PencilState {
+    static var seen = false
+    static var down = 0
+    static var last = Date.distantPast
+    static var active: Bool {
+        let since = Date().timeIntervalSince(last)
+        return (down > 0 && since < 5) || since < 1
+    }
+}
+
+// Beobachtet nur (erkennt selbst nie etwas)
+final class PencilWatcher: UIGestureRecognizer {
+    var onPencilDown: (() -> Void)?
+    private var open = 0
+
+    override init(target: Any? = nil, action: Selector? = nil) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        open += touches.count
+        let pencils = touches.filter { $0.type == .pencil }.count
+        guard pencils > 0 else { return }
+        PencilState.seen = true
+        PencilState.down += pencils
+        PencilState.last = Date()
+        onPencilDown?()
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        if touches.contains(where: { $0.type == .pencil }) { PencilState.last = Date() }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { lifted(touches) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { lifted(touches) }
+
+    private func lifted(_ touches: Set<UITouch>) {
+        let pencils = touches.filter { $0.type == .pencil }.count
+        if pencils > 0 {
+            PencilState.down = max(0, PencilState.down - pencils)
+            PencilState.last = Date()
+        }
+        open -= touches.count
+        if open <= 0 { state = .failed }
+    }
+
+    override func reset() { open = 0 }
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+}
+
 // Nimmt nur den Apple Pencil an (oder auch den Finger, wenn in den Einstellungen
-// „Nur mit Apple Pencil zeichnen“ aus ist). Weil sie sofort beginnt, kommen
-// Blättern und Textauswahl für diese Berührung gar nicht erst zum Zug.
+// „Nur mit Apple Pencil zeichnen“ aus ist und der Pencil noch nicht benutzt
+// wurde). Weil sie sofort beginnt, kommen Blättern und Textauswahl für diese
+// Berührung gar nicht erst zum Zug.
 final class DrawGesture: UIGestureRecognizer {
     private(set) var samples: [CGPoint] = []
     private var tracked: UITouch?
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        guard tracked == nil, let t = touches.first else {
+        // Finger (Handballen) zeichnen nicht, sobald der Pencil benutzt wird
+        let usable = touches.filter { $0.type == .pencil || !(PencilState.seen || PencilState.active) }
+        guard tracked == nil, let t = usable.first else {
             for t in touches where t !== tracked { ignore(t, for: event) }
             return
         }
+        for o in touches where o !== t { ignore(o, for: event) }
         tracked = t
         samples = [t.preciseLocation(in: view)]
         state = .began
@@ -389,12 +454,22 @@ final class DrawGesture: UIGestureRecognizer {
         tracked = nil
         samples = []
     }
+
+    // Hat der Handballen schon ein Blättern ausgelöst, darf der Pencil trotzdem zeichnen
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 }
 
 // PDFView ist selbst Delegate seiner Gesten – eigene Gesten bekommen einen eigenen
 final class GestureGate: NSObject, UIGestureRecognizerDelegate {
     var shouldBegin: (UIGestureRecognizer) -> Bool = { _ in true }
     func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool { shouldBegin(g) }
+    // Handballen: keine Finger, solange mit dem Pencil geschrieben wird
+    private(set) var lastTouchType: UITouch.TouchType?
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard touch.type != .direct || !PencilState.active else { return false }
+        lastTouchType = touch.type
+        return true
+    }
 }
 
 // MARK: - PDF-Ansicht mit Werkzeugen
@@ -415,6 +490,7 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
     private var moving: (ann: PDFAnnotation, page: PDFPage, start: CGPoint, orig: CGRect)?
     private let moveFrame = CAShapeLayer()
     private var lastMoveEnd = Date.distantPast
+    private var movingWithPencil = false
 
     private(set) var textView: UITextView?
     private var editingAnnotation: PDFAnnotation?
@@ -496,6 +572,22 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
         return find(self)
     }
 
+    // Der Pencil setzt auf: Was ein Finger gerade tut, war der Handballen –
+    // Blättern, Zoomen und Verschieben mit dem Finger abbrechen
+    func pencilDown() {
+        if let sv = innerScrollView {
+            let fingers: [UIGestureRecognizer?] = [sv.panGestureRecognizer, sv.pinchGestureRecognizer]
+            for g in fingers.compactMap({ $0 }) where g.state == .began || g.state == .changed {
+                g.isEnabled = false
+                g.isEnabled = true
+            }
+        }
+        if moving != nil, !movingWithPencil {
+            moveGesture.isEnabled = false
+            moveGesture.isEnabled = true
+        }
+    }
+
     func toolChanged() {
         // Eine übrig gebliebene Textauswahl samt Menü nicht mitnehmen
         if tool != "select" { clearSelection() }
@@ -528,6 +620,7 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
             guard let (page, ann) = movableAnnotation(at: vp) else { return }
             endTextEditing(commit: true)
             moving = (ann, page, convert(vp, to: page), ann.bounds)
+            movingWithPencil = moveGate.lastTouchType == .pencil
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             showMoveFrame()
         case .changed:
@@ -546,7 +639,13 @@ final class PadPDFView: PDFView, UITextViewDelegate, UIIndirectScribbleInteracti
             guard let m = moving else { return }
             moving = nil
             lastMoveEnd = Date()
-            if m.ann.bounds != m.orig { ed.moved(m.ann, on: m.page, from: m.orig) }
+            if g.state != .ended {
+                // Abgebrochen (z. B. war es der Handballen): zurück an den alten Platz
+                m.ann.bounds = m.orig
+                annotationsChanged(on: m.page)
+            } else if m.ann.bounds != m.orig {
+                ed.moved(m.ann, on: m.page, from: m.orig)
+            }
         default:
             break
         }
