@@ -242,6 +242,7 @@ export function attachDnd(ed) {
         d.removeEventListener('lostpointercapture', cancel);
         if (offPen) offPen();
         touchGrab = false;
+        if (touch.type === 'pen') shield(false);
       } else {
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
@@ -318,6 +319,7 @@ export function attachDnd(ed) {
     // Ein Griff, der zu einem gelöschten Block gehört, zählt nicht
     if (hoverBlock && !ed.byId.has(hoverBlock.id)) { hoverBlock = null; handle.classList.remove('show'); }
     const b = gripTarget(e);
+    if (e.pointerType === 'pen') shield(!!b);
     if (!b) return;
     // Keine nachgemachten Mausklicks, nichts darunter reagiert (offene Menüs schließt commit unten)
     e.preventDefault();
@@ -335,8 +337,25 @@ export function attachDnd(ed) {
     try { d.setPointerCapture(e.pointerId); } catch { /* egal */ }
     startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen, type: e.pointerType, commit });
   }, true);
-  // Solange der Griff gehalten wird: kein Scrollen, keine Handschrift-Erkennung
+  // Solange der Griff gehalten wird: kein Scrollen
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });
+
+  // Pencil am Griff: Scribble (Handschrift) sucht beim Aufsetzen Textfelder im
+  // Umkreis des Stifts und übernimmt den Strich, sobald eines in der Nähe ist –
+  // der Text des Blocks steht direkt neben dem Griff, das Ziehen bräche ab.
+  // preventDefault auf touchstart hält Scribble nicht auf. Deshalb sind
+  // Textfelder für die Trefferprüfung unsichtbar (pointer-events: none, siehe
+  // .pen-grip in editor.css), solange der Stift über der Griffzone schwebt oder
+  // den Griff hält; dann findet Scribble keins.
+  const shield = (on) => d.classList.toggle('pen-grip', on);
+  let hoverRaf = 0, hoverAtPen = null;
+  d.addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'pen' || e.buttons || touchGrab || dragging || ed.readonly) return;
+    hoverAtPen = { target: e.target, clientX: e.clientX, clientY: e.clientY };
+    if (hoverRaf) return;
+    hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; if (!touchGrab) shield(!!gripTarget(hoverAtPen)); });
+  }, true);
+  d.addEventListener('pointerleave', (e) => { if (e.pointerType === 'pen' && !touchGrab) shield(false); });
 
   // Rahmen-Auswahl vom Rand aus und Text-Ziehen über Blockgrenzen
   d.addEventListener('mousedown', (e) => {
