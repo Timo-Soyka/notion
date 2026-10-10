@@ -393,6 +393,8 @@ span[data-c="purple"] { color: var(--t-purple); } span[data-c="pink"] { color: v
 .blk-handle button:hover { background: var(--hover-strong); color: var(--muted); }
 .blk-handle .grip { cursor: grab; width: 18px; }
 .blk-handle .grip:active { cursor: grabbing; }
+/* iPad: Pencil über oder auf dem Griff – Scribble soll kein Textfeld finden (dnd.js) */
+.pen-grip [contenteditable="true"], .pen-grip [contenteditable="true"] *, .pen-grip textarea, .pen-grip input, .pen-grip math-field { pointer-events: none !important; }
 .drop-indicator { position: absolute; height: 3px; background: rgba(35, 131, 226, 0.5); border-radius: 2px; pointer-events: none; z-index: 40; }
 .drop-indicator.vertical { width: 3px; height: auto; }
 .drag-ghost { position: fixed; z-index: 3000; pointer-events: none; opacity: 0.55; max-width: 600px; background: var(--bg); border-radius: 4px; padding: 2px 6px; box-shadow: var(--shadow-pop); font-family: var(--font-ui); font-size: 14px; }
