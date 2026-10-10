@@ -1,6 +1,7 @@
 // Kleine Oberflächen-Bausteine: Menüs, Popover, Dialoge, Meldungen, Tooltips.
 
 import { icon } from './icons.js';
+import { isPalm } from '../palm.js';
 
 export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
@@ -78,11 +79,11 @@ export function popover(anchor, content, opts = {}) {
   // das Menü bliebe sonst offen stehen. Wischen (Scrollen) und ein aufliegender
   // Handballen schließen nicht.
   let touch = null;
-  const onPointer = (e) => { touch = e.pointerType === 'mouse' ? null : { e, x: e.clientX, y: e.clientY, at: performance.now() }; };
+  const onPointer = (e) => { touch = e.pointerType === 'mouse' || isPalm(e) ? null : { e, x: e.clientX, y: e.clientY, at: performance.now() }; };
   const onPointerUp = (e) => {
     const t = touch;
     touch = null;
-    if (!t || e.pointerId !== t.e.pointerId) return;
+    if (!t || e.pointerId !== t.e.pointerId || isPalm(e)) return;
     if (Math.hypot(e.clientX - t.x, e.clientY - t.y) > 10 || performance.now() - t.at > 600) return;
     onDown(t.e);
   };

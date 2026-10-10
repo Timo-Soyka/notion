@@ -34,6 +34,7 @@ final class Mirror {
     private var watchers: [FolderWatcher] = []
     private var activity: NSObjectProtocol?
     private var pending: DispatchWorkItem?
+    private var pendingAt: Date?
     /// Dateinamen in Aufträge/ und Anhänge/ nach dem letzten Durchgang (nur Hauptthread):
     /// Die Ordnerüberwachung reagiert auf neue Dateien, nicht auf das eigene Löschen
     private var knownNames = Set<String>()
@@ -79,7 +80,7 @@ final class Mirror {
             }
             self.timer?.invalidate()
             // Nur noch als Rückfall und für Änderungen in DEVONthink selbst – Aufträge kommen über die Ordnerüberwachung
-            self.timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.syncSoon(after: 0) }
+            self.timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.syncSoon(after: 0) }
             self.watch()
             self.syncSoon(after: 1)
         }
@@ -115,9 +116,14 @@ final class Mirror {
     func syncSoon(after delay: TimeInterval = 3) {
         guard enabled else { return }
         DispatchQueue.main.async {
+            // Ein früher geplanter Durchgang bleibt stehen – sonst schöbe jede neue
+            // Zwischenspeicherung vom iPad (alle paar Sekunden) ihn immer weiter hinaus
+            let due = Date().addingTimeInterval(delay)
+            if let item = self.pending, !item.isCancelled, let at = self.pendingAt, at <= due { return }
             self.pending?.cancel()
-            let item = DispatchWorkItem { [weak self] in self?.syncNow() }
+            let item = DispatchWorkItem { [weak self] in self?.pendingAt = nil; self?.syncNow() }
             self.pending = item
+            self.pendingAt = due
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         }
     }
@@ -145,6 +151,110 @@ final class Mirror {
                 if self.again { self.again = false; self.syncSoon(after: 1) }
             }
         }
+    }
+
+    // MARK: - Alte iPad-Kopien aufräumen
+
+    /// Aus der Zeit vor 1.16 liegen womöglich noch viele Kopien „… (iPad)“ neben den
+    /// Einträgen. Pro Eintrag bleibt nur die neueste Fassung: Ist eine Kopie neuer,
+    /// übernimmt der Eintrag ihren Inhalt (mit Sicherung) und wird geprüft; erst danach
+    /// wandern die Kopien in den Papierkorb von DEVONthink.
+    func cleanup(completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        if busy { completion(.failure(DTError.script("Der Abgleich läuft gerade – bitte gleich noch einmal versuchen"))); return }
+        busy = true
+        dt.async({ try self.runCleanup() }) { result in
+            DispatchQueue.main.async {
+                self.busy = false
+                if case .success(let r) = result, (r["entries"] as? Int ?? 0) > 0 { self.onChange?() }
+                completion(result)
+                self.syncSoon(after: 1)
+            }
+        }
+    }
+
+    private func runCleanup() throws -> [String: Any] {
+        let s = settings
+        guard let database = s["database"] as? String, !database.isEmpty else { throw DTError.script("Keine Datenbank gewählt") }
+        guard let tree = try dt.run(Scripts.tree, [database, s["root"] as? String ?? ""]) as? [String: Any] else { throw DTError.script("Ordnerbaum nicht lesbar") }
+        let suffix = " (iPad)"
+
+        // Eintrag → seine Kopien „… (iPad)“ im selben Ordner
+        var originals: [String: [String: Any]] = [:]
+        var copies: [String: [[String: Any]]] = [:]
+        func asNote(_ n: [String: Any]) -> [String: Any]? {
+            (n["note"] as? String).map { ["uuid": $0, "name": n["name"] as? String ?? "", "modified": n["modified"] as? String ?? "", "kind": "note"] }
+        }
+        func scan(_ nodes: [[String: Any]], bundle: [String: Any]?) {
+            var items = nodes.compactMap { n -> [String: Any]? in
+                switch n["kind"] as? String ?? "" {
+                case "group": return nil
+                case "bundle": return asNote(n)
+                default: return n
+                }
+            }
+            // Im Eintrags-Ordner liegt die Kopie neben dem Eintrag selbst
+            if let b = bundle, let note = asNote(b) { items.append(note) }
+            var byName: [String: [String: Any]] = [:]
+            for n in items {
+                let name = n["name"] as? String ?? ""
+                if !name.hasSuffix(suffix) && byName[name] == nil { byName[name] = n }
+            }
+            for c in items {
+                var base = c["name"] as? String ?? ""
+                guard base.hasSuffix(suffix) else { continue }
+                while base.hasSuffix(suffix) { base.removeLast(suffix.count) }
+                guard let o = byName[base], let ou = o["uuid"] as? String, o["kind"] as? String == c["kind"] as? String else { continue }
+                originals[ou] = o
+                copies[ou, default: []].append(c)
+            }
+            for n in nodes { if let kids = n["children"] as? [[String: Any]] { scan(kids, bundle: n["kind"] as? String == "bundle" ? n : nil) } }
+        }
+        scan(tree["nodes"] as? [[String: Any]] ?? [], bundle: nil)
+
+        var entries = 0, trashed = 0, replaced = 0
+        var log: [String] = []
+        for (uuid, original) in originals {
+            let list = copies[uuid] ?? []
+            let name = original["name"] as? String ?? ""
+            let isNote = original["kind"] as? String == "note"
+            // Neueste Fassung nach Änderungsdatum (ISO-Zeit in UTC, als Text vergleichbar)
+            let newest = ([original] + list).max { ($0["modified"] as? String ?? "") < ($1["modified"] as? String ?? "") } ?? original
+            if let nu = newest["uuid"] as? String, nu != uuid {
+                let paths = try dt.run(Scripts.paths, [jsonString([nu, uuid])]) as? [String: [String: Any]] ?? [:]
+                guard let np = paths[nu]?["path"] as? String, let op = paths[uuid]?["path"] as? String,
+                      let data = try? Data(contentsOf: URL(fileURLWithPath: np)), !data.isEmpty else {
+                    log.append("Übersprungen: „\(name)“ (neueste Fassung nicht lesbar)")
+                    continue
+                }
+                let ext = URL(fileURLWithPath: op).pathExtension
+                let tmp = Store.shared.tempFile("aufraeumen.\(ext.isEmpty ? (isNote ? "md" : "dat") : ext)")
+                try data.write(to: tmp)
+                defer { try? fm.removeItem(at: tmp) }
+                if isNote {
+                    if let old = try? String(contentsOf: URL(fileURLWithPath: op), encoding: .utf8) { Store.shared.backup(uuid: uuid, markdown: old) }
+                    _ = try dt.run(Scripts.write, [uuid, tmp.path, name, ""])
+                } else {
+                    try dt.replaceData(uuid: uuid, with: tmp)
+                    DispatchQueue.main.async { SchemeHandler.shared.invalidate(uuid: uuid) }
+                }
+                // Erst löschen, wenn der Eintrag nachweislich den neuesten Stand hat
+                let check = try dt.run(Scripts.paths, [jsonString([uuid])]) as? [String: [String: Any]]
+                let now = (check?[uuid]?["path"] as? String).flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) } ?? Data()
+                guard isNote ? Self.noteHash(now) == Self.noteHash(data) : sha256(now) == sha256(data) else {
+                    log.append("Übersprungen: „\(name)“ (neueste Fassung ließ sich nicht prüfen)")
+                    continue
+                }
+                replaced += 1
+            }
+            for c in list {
+                guard let cu = c["uuid"] as? String else { continue }
+                _ = try dt.run(Scripts.trash, [cu])
+                trashed += 1
+            }
+            entries += 1
+            log.append("„\(name)“: \(list.count) alte Fassung(en) entfernt")
+        }
+        return ["entries": entries, "trashed": trashed, "replaced": replaced, "log": log]
     }
 
     // MARK: - Ein Durchgang
@@ -203,7 +313,16 @@ final class Mirror {
         var log: [String] = []
 
         // 1. Aufträge vom iPad eintragen – streng in der Reihenfolge, in der sie entstanden sind
+        // Noch nicht heruntergeladene Aufträge („.name.json.icloud“) gleich anfordern und
+        // in der Reihenfolge mitzählen – sonst überholten spätere Aufträge sie
         let urls = ((try? fm.contentsOfDirectory(at: ordersDir, includingPropertiesForKeys: nil)) ?? [])
+            .compactMap { u -> URL? in
+                let n = u.lastPathComponent
+                guard n.hasPrefix("."), n.hasSuffix(".icloud") else { return u }
+                let real = ordersDir.appendingPathComponent(String(n.dropFirst().dropLast(".icloud".count)))
+                try? fm.startDownloadingUbiquitousItem(at: real)
+                return real
+            }
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         let present = Set(urls.map(\.lastPathComponent))
@@ -224,6 +343,8 @@ final class Mirror {
                 // Schon eingetragen (Heft wurde vor dem Löschen beendet): nur noch aufräumen
                 if applied.contains(name) { try? coordinatedDelete(url); continue }
                 if let order = readJSON(url) { orders.append((url, order)); continue }
+                // Inzwischen verschwunden (vom iPad durch einen neueren Speicherstand ersetzt): kein Grund zu warten
+                if !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: ordersDir.appendingPathComponent(".\(name).icloud").path) { continue }
                 // Noch nicht ganz da: später weiter, damit nichts überholt wird
                 if waited(name) < giveUpAfter { log.append("Warte auf einen Auftrag"); break }
                 fail(url, order: ["op": "?"], message: "Auftrag ist unlesbar", failed: &failed, applied: &applied, log: &log)

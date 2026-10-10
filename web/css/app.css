@@ -90,6 +90,8 @@
 .crumb.dim { color: var(--muted); }
 .crumb-sep { color: var(--faint); font-size: 13px; flex: none; }
 .topbar-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.topbar-sep { width: 1px; height: 18px; background: var(--border); margin: 0 6px; flex: none; }
+.ipad .topbar-actions .btn.icon-only { width: 40px; height: 40px; }
 .save-state { font-size: 12.5px; color: var(--faint); padding: 0 8px; white-space: nowrap; }
 .save-state.error { color: var(--danger); }
 

@@ -6,6 +6,9 @@
 //     Seitenleiste): Ziehen mit Finger oder Stift wird zu Mausziehen.
 //   • Lange drücken öffnet das Kontextmenü (Seitenleiste, Spaltengriffe …).
 //   • Doppeltippen auf Griffe wirkt wie Doppelklick.
+// Berührungen vom Handballen (palm.js) lösen nichts davon aus.
+
+import { isPalm, onPenDown } from './palm.js';
 
 // (Der Block-Griff ⋮⋮ hat in editor/dnd.js eine eigene Behandlung für Finger und Pencil)
 const DRAG = '.sidebar-resizer, .tcol-resize, .col-resize, .plot-resize, .img-handle, .blk.editing .plot-svg';
@@ -28,12 +31,12 @@ export function installTouch() {
   // --- Ziehgriffe ---
   let drag = null;
   document.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' || drag) return;
+    if (e.pointerType === 'mouse' || drag || isPalm(e)) return;
     const t = e.target.closest && e.target.closest(DRAG);
     if (!t) return;
     // Verhindert die nachgemachten Mausereignisse von iPadOS (sonst doppelt)
     e.preventDefault();
-    drag = { id: e.pointerId, target: t };
+    drag = { id: e.pointerId, target: t, touch: e.pointerType === 'touch', start: { clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY } };
     fire(t, 'mousedown', e);
   }, true);
   window.addEventListener('pointermove', (e) => {
@@ -47,8 +50,18 @@ export function installTouch() {
     drag = null;
     fire(t, 'mouseup', e);
   };
+  // Abgebrochen (iPadOS hat den Handballen erkannt, oder der Pencil setzt
+  // auf): zurück zum Ausgangspunkt, damit sich nichts verändert
+  const abortDrag = () => {
+    if (!drag) return;
+    const { target, start } = drag;
+    drag = null;
+    fire(target, 'mousemove', start);
+    fire(target, 'mouseup', start);
+  };
   window.addEventListener('pointerup', endDrag, true);
-  window.addEventListener('pointercancel', endDrag, true);
+  window.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) abortDrag(); }, true);
+  onPenDown(() => { if (drag && drag.touch) abortDrag(); });
 
   // --- Lange drücken = Kontextmenü ---
   // Das Menü kommt beim Loslassen: So bleibt Halten und Ziehen frei für das
@@ -58,6 +71,7 @@ export function installTouch() {
   const cancelPress = () => { press = null; };
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') return;
+    if (isPalm(e)) { press = null; return; }
     const t = e.target.closest && e.target.closest(CONTEXT);
     press = t ? { id: e.pointerId, x: e.clientX, y: e.clientY, at: performance.now(), t } : null;
   }, true);
@@ -75,6 +89,7 @@ export function installTouch() {
     fire(p.t, 'contextmenu', { clientX: p.x, clientY: p.y, screenX: e.screenX, screenY: e.screenY });
   }, true);
   window.addEventListener('pointercancel', cancelPress, true);
+  onPenDown((e) => { if (press && press.id !== e.pointerId) cancelPress(); });
   for (const type of ['mousedown', 'mouseup', 'click']) {
     document.addEventListener(type, (e) => {
       if (e.heftTouch || performance.now() > swallowUntil) return;
@@ -123,6 +138,7 @@ export function installTouch() {
   let lastSynth = 0;
   document.addEventListener('pointerup', (e) => {
     if (e.pointerType === 'mouse') return;
+    if (isPalm(e)) { lastTap = null; return; }
     const t = e.target.closest && e.target.closest(DOUBLE);
     if (!t) { lastTap = null; return; }
     const now = performance.now();
