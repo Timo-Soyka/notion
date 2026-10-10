@@ -322,11 +322,30 @@ function ipadPage(app, save) {
     const probe = h('button', { class: 'btn sm outline' }, 'Prüfen …');
     probe.addEventListener('click', () => call('dttg.probe').catch(e => toast('Prüfung fehlgeschlagen: ' + e.message, { type: 'error' })));
     change.addEventListener('click', () => call('mirror.reset'));
+    // Abgleich ohne Mac: Kurzbefehl „Heft-Abgleich“ trägt Änderungen in DEVONthink To Go ein
+    const dttgNow = h('button', { class: 'btn sm outline' }, 'Jetzt abgleichen');
+    dttgNow.addEventListener('click', async () => {
+      try {
+        const r = await call('sync.now');
+        if (r && r.dttg && !r.started) toast('Nichts abzugleichen.', { type: 'success' });
+      } catch (e) { toast('Abgleich fehlgeschlagen: ' + e.message, { type: 'error' }); }
+      refresh();
+    });
+    const dttgRow = row('Abgleich jetzt', 'Öffnet kurz den Kurzbefehl „Heft-Abgleich“, trägt alle offenen Änderungen in DEVONthink To Go ein und springt zurück.', dttgNow);
+    dttgRow.style.display = 'none';
+    call('sync.info').then(i => { dttgSwitch.querySelector('input').checked = !!i.dttg; dttgRow.style.display = i.dttg ? '' : 'none'; }).catch(() => {});
+    const dttgSwitch = sw(false, async (v) => {
+      try { await call('dttg.enable', { enabled: v }); } catch (e) { toast('Nicht möglich: ' + e.message, { type: 'error' }); }
+      dttgRow.style.display = v ? '' : 'none';
+      refresh();
+    });
     return [
-      h('h3', { text: 'Abgleich mit dem Mac' }),
-      h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt Heft am Mac sofort in DEVONthink ein – dafür muss der Mac an sein und Heft dort laufen (auch im Hintergrund). Es gilt immer die zuletzt gespeicherte Fassung; Kopien wie „… (iPad)“ entstehen nicht mehr.' }),
+      h('h3', { text: 'Abgleich' }),
+      h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt entweder Heft am Mac in DEVONthink ein (der Mac muss an sein) – oder, ohne Mac, DEVONthink To Go über den Kurzbefehl „Heft-Abgleich“. Es gilt immer die zuletzt gespeicherte Fassung.' }),
       h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change)),
-      row('DEVONthink To Go', 'Prüft, ob Heft deine DEVONthink-To-Go-Datenbank über die Dateien-App direkt lesen und beschreiben kann (Abgleich ohne Mac). Legt dafür kurz eine Probedatei an und löscht sie wieder.', probe),
+      row('Über DEVONthink To Go (ohne Mac)', 'Änderungen gehen nicht mehr über den Mac, sondern direkt in DEVONthink To Go; das gleicht dann selbst mit dem Mac ab. Braucht den Kurzbefehl „Heft-Abgleich“. Beim Ausschalten übernimmt wieder Heft am Mac, was noch offen ist.', dttgSwitch),
+      dttgRow,
+      row('DEVONthink To Go prüfen', 'Prüft, ob Heft eine Datei aus DEVONthink To Go über die Dateien-App lesen und beschreiben kann.', probe),
       h('h3', { text: 'Eingabe' }),
       row('Mathe-Tastatur', 'Beim Tippen in eine Formel (auch in Graphen) erscheint statt der normalen Bildschirmtastatur eine eigene Tastatur mit Bruch, Wurzel, Hochzahl, Funktionen, Integralen, griechischen Buchstaben und Einheiten. Mit ⌄ lässt sie sich einklappen, etwa wenn eine Hardware-Tastatur angeschlossen ist.',
         sw(s.mathKeyboard !== false, (v) => save({ mathKeyboard: v }))),

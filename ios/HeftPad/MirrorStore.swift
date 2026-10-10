@@ -49,12 +49,14 @@ final class MirrorStore {
         var applied: Bool?        // vom Mac eingetragen
         var failed: Bool?         // vom Mac abgelehnt – eigene Fassung bleibt sichtbar …
         var base: String?         // … solange die Kopie vom Mac noch diesen Stand hat (höchstens einen Tag)
+        var dttg: Bool?           // über DEVONthink To Go eingetragen (sichtbar, bis die Kopie vom Mac es zeigt)
     }
 
     struct PadState: Codable {
         var pending: [Pending] = []
         var settings: [String: AnyCodable] = [:] // eigene Einstellungen (vor denen vom Mac)
         var lastOrder: String? = nil             // zuletzt geschriebene Auftragsdatei
+        var aliases: [String: String]? = nil     // vorläufige → echte Kennung, von DEVONthink To Go gemeldet
     }
 
     /// Ergebnis einer Prüfung von Heft.json
@@ -220,7 +222,11 @@ final class MirrorStore {
         (m["changed"] as? String) ?? (m["generated"] as? String)
     }
 
-    private var aliasMap: [String: String] { manifest["aliases"] as? [String: String] ?? [:] }
+    private var aliasMap: [String: String] {
+        var a = manifest["aliases"] as? [String: String] ?? [:]
+        for (k, v) in state.aliases ?? [:] where a[k] == nil { a[k] = v }
+        return a
+    }
     var aliases: [String: String] { lock.lock(); defer { lock.unlock() }; return aliasMap }
     private var files: [String: [String: Any]] { manifest["files"] as? [String: [String: Any]] ?? [:] }
 
@@ -245,7 +251,8 @@ final class MirrorStore {
             var ok = done.contains(p.id)
             // Rückfall (z. B. Mac mitten im Abgleich beendet): Auftrag ist weg und das Verzeichnis deutlich jünger
             if !ok, generated.timeIntervalSince(p.created) > 600,
-               !fm.fileExists(atPath: root.appendingPathComponent("Aufträge/\(p.id)").path) { ok = true }
+               !fm.fileExists(atPath: root.appendingPathComponent("Aufträge/\(p.id)").path),
+               p.dttg != true, !DTTGSync.isQueued(p.id) { ok = true }
             guard ok else { continue }
             state.pending[i].applied = true
             changed = true
@@ -275,8 +282,14 @@ final class MirrorStore {
         var check: [(id: String, info: [String: Any], hash: String, note: Bool, target: String)] = []
         var staleFailed = Set<String>()                   // abgelehnte Fassungen, die nun dem Mac weichen
         let now = Date()
+        let shown = mirrorPlaces()
         for (i, p) in state.pending.enumerated() where p.applied == true {
-            guard p.markdown != nil || p.localFile != nil, let target = real(p.uuid) else { drop.insert(p.id); continue }
+            guard p.markdown != nil || p.localFile != nil, let target = real(p.uuid) else {
+                // Über DEVONthink To Go eingetragen: sichtbar lassen, bis die Kopie vom Mac es zeigt
+                if p.dttg == true, p.failed != true, !Self.mirrorShows(p, places: shown, aliases: al),
+                   now.timeIntervalSince(p.created) < 30 * 86_400 { continue }
+                drop.insert(p.id); continue
+            }
             // Eine neuere eigene Fassung desselben Eintrags zeigt ohnehin die
             if state.pending[(i + 1)...].contains(where: { real($0.uuid) == target && ($0.markdown != nil || $0.localFile != nil) }) { drop.insert(p.id); continue }
             // Vom Mac abgelehnt: eigene Fassung noch einen Tag zeigen (zum Abschreiben)
@@ -290,7 +303,8 @@ final class MirrorStore {
             }
             guard let info = fs[target], let want = info["hash"] as? String else {
                 // Mac kennt den Eintrag nicht (mehr) – nicht ewig festhalten
-                if now.timeIntervalSince(p.created) > 600 { drop.insert(p.id) }
+                // (über DEVONthink To Go Eingetragenes kommt erst mit dessen Abgleich zum Mac)
+                if now.timeIntervalSince(p.created) > (p.dttg == true ? 30 * 86_400 : 600) { drop.insert(p.id) }
                 continue
             }
             check.append((p.id, info, want, p.markdown != nil, target))
@@ -347,30 +361,41 @@ final class MirrorStore {
         var nodes = tree["nodes"] as? [[String: Any]] ?? []
         let rootId = (tree["root"] as? [String: Any])?["uuid"] as? String ?? ""
         let al = aliasMap
-        for p in state.pending where p.applied != true {
+        let known = Self.ids(in: nodes)
+        for p in state.pending {
+            // Über DEVONthink To Go eingetragen: zeigen, bis die Kopie vom Mac es enthält
+            let viaDTTG = p.applied == true && p.dttg == true && p.failed != true
+            guard p.applied != true || viaDTTG else { continue }
             // Schon vom Mac übernommen (echte Kennung bekannt und im Baum)? Dann nichts mehr tun
             let target = p.uuid.map { al[$0] ?? $0 }
             let iso = isoString(p.created)
+            // Neu Angelegtes: unter welcher Kennung zeigen – oder gar nicht (schon in der Kopie)?
+            func shownId(_ tmp: String?) -> String? {
+                guard let tmp else { return nil }
+                guard let real = al[tmp] else { return tmp }
+                return viaDTTG && !known.contains(real) ? real : nil
+            }
             switch p.op {
             case "create-note":
-                guard let tmp = p.uuid, al[tmp] == nil else { continue }
-                let note: [String: Any] = ["uuid": tmp, "name": p.name ?? "Unbenannt", "kind": "note", "type": "markdown", "ext": "md", "modified": iso]
+                guard let id = shownId(p.uuid) else { continue }
+                let note: [String: Any] = ["uuid": id, "name": p.name ?? "Unbenannt", "kind": "note", "type": "markdown", "ext": "md", "modified": iso]
                 let parent = (p.parent.map { al[$0] ?? $0 }) ?? rootId
                 if p.bundle == true {
-                    let group: [String: Any] = ["uuid": p.tempGroup ?? tmp + "-G", "name": p.name ?? "Unbenannt", "kind": "bundle", "note": tmp, "modified": iso, "children": []]
+                    let gid = p.tempGroup.map { al[$0] ?? $0 } ?? id + "-G"
+                    let group: [String: Any] = ["uuid": gid, "name": p.name ?? "Unbenannt", "kind": "bundle", "note": id, "modified": iso, "children": []]
                     insert(group, into: parent, nodes: &nodes, root: rootId)
                 } else {
                     insert(note, into: parent, nodes: &nodes, root: rootId)
                 }
             case "create-group":
-                guard let tmp = p.uuid, al[tmp] == nil else { continue }
-                let group: [String: Any] = ["uuid": tmp, "name": p.name ?? "Neuer Ordner", "kind": "group", "modified": iso, "children": []]
+                guard let id = shownId(p.uuid) else { continue }
+                let group: [String: Any] = ["uuid": id, "name": p.name ?? "Neuer Ordner", "kind": "group", "modified": iso, "children": []]
                 insert(group, into: (p.parent.map { al[$0] ?? $0 }) ?? rootId, nodes: &nodes, root: rootId)
             case "create-file":
-                guard let tmp = p.uuid, al[tmp] == nil else { continue }
+                guard let id = shownId(p.uuid) else { continue }
                 let ext = ((p.localFile ?? "") as NSString).pathExtension.lowercased()
                 let kind = ext == "pdf" ? "pdf" : "image"
-                let file: [String: Any] = ["uuid": tmp, "name": p.name ?? "Datei", "kind": kind, "type": kind == "pdf" ? "PDF document" : "picture", "ext": ext, "modified": iso]
+                let file: [String: Any] = ["uuid": id, "name": p.name ?? "Datei", "kind": kind, "type": kind == "pdf" ? "PDF document" : "picture", "ext": ext, "modified": iso]
                 insert(file, into: (p.parent.map { al[$0] ?? $0 }) ?? rootId, nodes: &nodes, root: rootId)
             case "rename":
                 if let target { update(target, in: &nodes) { $0["name"] = p.name ?? $0["name"] } }
@@ -431,6 +456,51 @@ final class MirrorStore {
             }
         }
         return nil
+    }
+
+    /// Alle Kennungen im Baum (Ordner, Einträge, Eintrags-Ordner)
+    private static func ids(in nodes: [[String: Any]]) -> Set<String> {
+        var out = Set<String>()
+        func walk(_ ns: [[String: Any]]) {
+            for n in ns {
+                if let u = n["uuid"] as? String { out.insert(u) }
+                if let u = n["note"] as? String { out.insert(u) }
+                if let kids = n["children"] as? [[String: Any]] { walk(kids) }
+            }
+        }
+        walk(nodes)
+        return out
+    }
+
+    /// Wo steht was in der Kopie vom Mac: Kennung → (Name, übergeordneter Ordner)
+    private func mirrorPlaces() -> [String: (name: String?, parent: String)] {
+        let tree = manifest["tree"] as? [String: Any] ?? [:]
+        let rootId = (tree["root"] as? [String: Any])?["uuid"] as? String ?? ""
+        var out: [String: (name: String?, parent: String)] = [:]
+        func walk(_ ns: [[String: Any]], _ parent: String) {
+            for n in ns {
+                guard let u = n["uuid"] as? String else { continue }
+                out[u] = (n["name"] as? String, parent)
+                if let note = n["note"] as? String { out[note] = (n["name"] as? String, parent) }
+                if let kids = n["children"] as? [[String: Any]] { walk(kids, u) }
+            }
+        }
+        walk(tree["nodes"] as? [[String: Any]] ?? [], rootId)
+        return out
+    }
+
+    /// Zeigt die Kopie vom Mac schon, was über DEVONthink To Go eingetragen wurde?
+    private static func mirrorShows(_ p: Pending, places: [String: (name: String?, parent: String)], aliases al: [String: String]) -> Bool {
+        guard let target = p.uuid.map({ al[$0] ?? $0 }) else { return true }
+        switch p.op {
+        case "create-group", "create-note", "create-file": return places[target] != nil
+        case "rename": return places[target].map { $0.name == p.name } ?? false
+        case "move":
+            guard let place = places[target] else { return false }
+            return p.parent.map { (al[$0] ?? $0) == place.parent } ?? true
+        case "trash": return places[target] == nil
+        default: return true
+        }
     }
 
     // MARK: - Einträge lesen und schreiben
@@ -540,7 +610,7 @@ final class MirrorStore {
     /// Neues Bild/PDF (z. B. eingefügt in einen Eintrag): Anhang + Auftrag, sofort nutzbar
     func addFile(parent: String, name: String, ext: String, data: Data) throws -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
-        guard let root else { throw err("Kein Heft-Ordner gewählt") }
+        guard let root = orderRoot else { throw err("Kein Heft-Ordner gewählt") }
         let tmp = newId()
         let cleanExt = ext.isEmpty ? "png" : ext.lowercased()
         // eigene Kopie im App-Speicher – der Anhang in iCloud wird nach dem Eintragen gelöscht
@@ -560,7 +630,7 @@ final class MirrorStore {
     /// Geänderte Datei (Bild nach Bearbeitung, ausgefülltes PDF)
     func writeFile(_ id: String, data: Data) throws {
         lock.lock(); defer { lock.unlock() }
-        guard let root else { throw err("Kein Heft-Ordner gewählt") }
+        guard let root = orderRoot else { throw err("Kein Heft-Ordner gewählt") }
         let uuid = resolve(id)
         // Noch nicht beim Mac angekommene neue Datei: Endung aus der eigenen Kopie
         let pendingExt = state.pending.last(where: { $0.uuid == uuid && $0.localFile != nil }).map { ($0.localFile! as NSString).pathExtension }
@@ -583,7 +653,7 @@ final class MirrorStore {
     /// Erkannter Text eines Scans (Texterkennung) – der Mac hinterlegt ihn in DEVONthink
     func setPlainText(_ id: String, text: String) throws {
         lock.lock(); defer { lock.unlock() }
-        _ = try writeOrder(["op": "plaintext", "uuid": resolve(id), "text": text])
+        _ = try writeOrder(["op": "plaintext", "uuid": resolve(id), "text": text], mac: true)
     }
 
     // MARK: - Dateien für die Anzeige
@@ -698,15 +768,20 @@ final class MirrorStore {
         for (k, v) in patch { state.settings[k] = AnyCodable(v) }
         saveState()
         lock.unlock()
-        _ = try? writeOrder(["op": "settings", "settings": patch])
+        _ = try? writeOrder(["op": "settings", "settings": patch], mac: true)
         return settings()
     }
 
     // MARK: - Aufträge
 
-    private func writeOrder(_ order: [String: Any]) throws -> String {
+    /// Wohin Aufträge gehen: über iCloud zum Mac – oder, beim Abgleich über
+    /// DEVONthink To Go, in den App-Speicher (der Kurzbefehl trägt sie dann ein)
+    private var orderRoot: URL? { DTTGSync.enabled ? DTTGSync.queueRoot : root }
+
+    /// mac: Aufträge, die nur Heft am Mac ausführen kann (Einstellungen, Texterkennung)
+    private func writeOrder(_ order: [String: Any], mac: Bool = false) throws -> String {
         lock.lock(); defer { lock.unlock() }
-        guard let root else { throw err("Kein Heft-Ordner gewählt") }
+        guard let root = mac ? root : orderRoot else { throw err("Kein Heft-Ordner gewählt") }
         var o = order
         o["at"] = isoNow()
         o["from"] = "iPad"
@@ -727,7 +802,7 @@ final class MirrorStore {
     /// abgeholt. Nur der letzte – sonst käme der neue Stand vor Aufträge, auf die er sich
     /// stützt (z. B. ein gerade eingefügtes Bild).
     private func replaceable(_ uuid: String, text: Bool) -> Pending? {
-        guard let root, let p = state.pending.last, p.id == state.lastOrder,
+        guard let root = orderRoot, let p = state.pending.last, p.id == state.lastOrder,
               p.op == "write", p.applied != true, (p.kind == "note") == text,
               let pu = p.uuid, pu == uuid || aliasMap[pu] == uuid,
               fm.fileExists(atPath: root.appendingPathComponent("Aufträge/\(p.id)").path) else { return nil }
@@ -738,7 +813,7 @@ final class MirrorStore {
     /// doch noch eingetragen, schadet das nicht: Der neue Stand folgt gleich danach.
     private func drop(_ p: Pending) {
         state.pending.removeAll { $0.id == p.id }
-        guard let root else { return }
+        guard let root = orderRoot else { return }
         try? coordinateDelete(root.appendingPathComponent("Aufträge/\(p.id)"))
         if let lf = p.localFile {
             try? coordinateDelete(root.appendingPathComponent("Aufträge/Anhänge/\(lf)"))
@@ -759,6 +834,169 @@ final class MirrorStore {
     private var counter: Int {
         get { UserDefaults.standard.integer(forKey: "orderCounter") }
         set { UserDefaults.standard.set(newValue, forKey: "orderCounter") }
+    }
+
+    // MARK: - Abgleich über DEVONthink To Go
+
+    /// Nächster Stapel für den Kurzbefehl, in der Reihenfolge der Aufträge – bis zum
+    /// ersten, der auf etwas verweist, das DEVONthink noch nicht kennt (vorläufige
+    /// Kennung). Der kommt in der nächsten Runde, wenn die echte Kennung zurück ist.
+    /// files: Anhänge, die der Kurzbefehl unter diesem Namen in „Anhänge/“ findet
+    func dttgBatch() -> (items: [[String: Any]], files: [(from: URL, name: String)]) {
+        lock.lock(); defer { lock.unlock() }
+        let base = DTTGSync.queueRoot
+        let q = base.appendingPathComponent("Aufträge", isDirectory: true)
+        let names = ((try? fm.contentsOfDirectory(atPath: q.path)) ?? []).filter { $0.hasSuffix(".json") }.sorted()
+        let al = aliasMap
+        let rootId = ((manifest["tree"] as? [String: Any])?["root"] as? [String: Any])?["uuid"] as? String ?? ""
+        func res(_ v: Any?) -> String? { (v as? String).flatMap { $0.isEmpty ? nil : (al[$0] ?? $0) } }
+        func known(_ id: String?) -> Bool { !(id?.hasPrefix("NEU-") ?? false) }
+        // Wartet ein Auftrag auf etwas, das nie angelegt wird (Anlegen gescheitert)? Dann fällt er weg
+        func orphan(_ ids: String?...) -> Bool {
+            ids.contains { id in
+                guard let id, id.hasPrefix("NEU-") else { return false }
+                return !state.pending.contains { $0.applied != true && ($0.uuid == id || $0.tempGroup == id) }
+            }
+        }
+        var orphans: [String] = []
+        defer {
+            for n in orphans {
+                try? fm.removeItem(at: q.appendingPathComponent(n))
+                if let i = state.pending.firstIndex(where: { $0.id == n }) {
+                    state.pending[i].applied = true
+                    state.pending[i].failed = true
+                    state.pending[i].dttg = true
+                }
+            }
+            if !orphans.isEmpty { saveState() }
+        }
+        var items: [[String: Any]] = []
+        var files: [(from: URL, name: String)] = []
+        func attach(_ o: [String: Any], into it: inout [String: Any]) {
+            guard let rel = o["attachment"] as? String else { return }
+            let name = (rel as NSString).lastPathComponent
+            files.append((base.appendingPathComponent(rel), name))
+            it["file"] = "Anhänge/" + name
+        }
+        for n in names {
+            guard let data = try? Data(contentsOf: q.appendingPathComponent(n)),
+                  let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let op = o["op"] as? String else { continue }
+            var it: [String: Any] = ["id": n, "op": op]
+            let parent = res(o["parent"]) ?? rootId
+            let uuid = res(o["uuid"])
+            if orphan(parent, uuid, res(o["to"])) { orphans.append(n); continue }
+            switch op {
+            case "create-note":
+                var into = parent
+                if o["bundle"] as? Bool == true, let g = o["tempGroup"] as? String {
+                    // Eintrags-Ordner zuerst; der Eintrag folgt, sobald der Ordner seine Kennung hat
+                    guard let real = al[g] else {
+                        guard known(parent) else { return (items, files) }
+                        items.append(["id": n + "#G", "op": "create-group", "parent": parent, "name": o["name"] as? String ?? "Unbenannt"])
+                        return (items, files)
+                    }
+                    into = real
+                }
+                guard known(into) else { return (items, files) }
+                it["parent"] = into
+                it["name"] = o["name"] as? String ?? "Unbenannt"
+                it["markdown"] = o["markdown"] as? String ?? ""
+            case "create-group":
+                guard known(parent) else { return (items, files) }
+                it["parent"] = parent
+                it["name"] = o["name"] as? String ?? "Neuer Ordner"
+            case "create-file":
+                guard known(parent) else { return (items, files) }
+                it["parent"] = parent
+                it["name"] = o["name"] as? String ?? "Datei"
+                attach(o, into: &it)
+            case "write":
+                guard let uuid, known(uuid) else { return (items, files) }
+                it["uuid"] = uuid
+                if let md = o["markdown"] as? String {
+                    it["markdown"] = md
+                    if let name = o["name"] as? String, !name.isEmpty { it["name"] = name }
+                } else {
+                    it["op"] = "write-file"
+                    attach(o, into: &it)
+                }
+            case "rename":
+                guard let uuid, known(uuid) else { return (items, files) }
+                it["uuid"] = uuid
+                it["name"] = o["name"] as? String ?? ""
+            case "move":
+                let to = res(o["to"]) ?? rootId
+                guard let uuid, known(uuid), known(to) else { return (items, files) }
+                it["uuid"] = uuid
+                it["to"] = to
+            case "trash":
+                guard let uuid, known(uuid) else { return (items, files) }
+                it["uuid"] = uuid
+            default:
+                continue
+            }
+            items.append(it)
+        }
+        return (items, files)
+    }
+
+    /// Rückmeldung des Kurzbefehls eintragen: je Auftrag die Kennung in DEVONthink
+    /// (oder „FEHLER …“). progress: Es wurde etwas erledigt (dann lohnt die nächste Runde)
+    func dttgApply(_ results: [(id: String, value: String)]) -> (progress: Bool, failures: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        let base = DTTGSync.queueRoot
+        var progress = false
+        var failures: [String] = []
+        var aliases = state.aliases ?? [:]
+        func removeOrder(_ id: String) {
+            let url = base.appendingPathComponent("Aufträge/\(id)")
+            if let data = try? Data(contentsOf: url),
+               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let rel = o["attachment"] as? String { try? fm.removeItem(at: base.appendingPathComponent(rel)) }
+            try? fm.removeItem(at: url)
+        }
+        for (id, raw) in results {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isGroup = id.hasSuffix("#G")
+            let oid = isGroup ? String(id.dropLast(2)) : id
+            guard let i = state.pending.firstIndex(where: { $0.id == oid }) else {
+                if !isGroup { removeOrder(oid); progress = true }
+                continue
+            }
+            let p = state.pending[i]
+            if value.uppercased().hasPrefix("FEHLER") || value.isEmpty {
+                let msg = value.isEmpty ? "keine Kennung zurückgemeldet" : String(value.dropFirst(6)).trimmingCharacters(in: CharacterSet(charactersIn: ": ").union(.whitespaces))
+                state.pending[i].applied = true
+                state.pending[i].failed = true
+                state.pending[i].dttg = true
+                state.pending[i].base = p.uuid.flatMap { files[aliasMap[$0] ?? $0]?["hash"] as? String }
+                failures.append("\(p.name.map { "„\($0)“" } ?? "Eine Änderung"): \(msg.isEmpty ? "unbekannter Fehler" : msg)")
+                removeOrder(oid)
+                continue
+            }
+            let uuid = Self.dtUUID(value)
+            if isGroup {
+                if let g = p.tempGroup { aliases[g] = uuid; progress = true }
+                continue
+            }
+            if p.op.hasPrefix("create"), let tmp = p.uuid { aliases[tmp] = uuid }
+            state.pending[i].applied = true
+            state.pending[i].dttg = true
+            removeOrder(oid)
+            progress = true
+        }
+        state.aliases = aliases
+        saveState()
+        return (progress, failures)
+    }
+
+    /// „x-devonthink-item://UUID?…“ oder die UUID selbst → UUID
+    static func dtUUID(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let r = t.range(of: "x-devonthink-item://") { t = String(t[r.upperBound...]) }
+        if let q = t.firstIndex(where: { $0 == "?" || $0 == "/" }) { t = String(t[..<q]) }
+        return t
     }
 
     // MARK: - Eigener Zustand (App-Speicher)

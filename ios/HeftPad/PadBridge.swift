@@ -478,6 +478,17 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "chem.lookup":
             Chem.lookup(name: s("name")) { reply(.success($0 ?? NSNull())) }
 
+        case "sync.now" where DTTGSync.enabled:
+            // Abgleich ohne Mac: Kurzbefehl „Heft-Abgleich“ starten
+            DispatchQueue.main.async { reply(.success(["ok": true, "dttg": true, "started": DTTGSync.start()])) }
+
+        case "dttg.enable":
+            let on = a["enabled"] as? Bool ?? false
+            DispatchQueue.main.async {
+                DTTGSync.setEnabled(on)
+                reply(.success(["enabled": DTTGSync.enabled]))
+            }
+
         case "sync.now":
             bg(reply) {
                 self.store.reloadManifest()
@@ -532,7 +543,8 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
 
         case "sync.info":
-            bg(reply) { ["enabled": true, "label": self.syncLabel(), "pending": self.store.pendingCount] }
+            bg(reply) { ["enabled": true, "label": self.syncLabel(), "pending": self.store.pendingCount,
+                         "dttg": DTTGSync.enabled, "dttgQueued": DTTGSync.queuedCount] }
 
         default:
             reply(.failure(err("Auf dem iPad noch nicht verfügbar (\(cmd))")))
@@ -544,6 +556,10 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// „iCloud · Mac vor 3 Min. · 2 Änderungen warten“ – der Mac meldet sich
     /// mindestens alle zehn Minuten; bleibt das aus, läuft Heft dort wohl nicht
     private func syncLabel() -> String {
+        if DTTGSync.enabled {
+            let n = DTTGSync.queuedCount
+            return "DEVONthink To Go · " + (n == 0 ? "alles eingetragen" : n == 1 ? "1 Änderung wartet" : "\(n) Änderungen warten")
+        }
         var parts = ["iCloud"]
         if store.macOutdated { parts.append("Heft am Mac ist noch eine ältere Version – bitte dort aktualisieren") }
         if let g = store.lastSync, let date = ISO8601DateFormatter().date(from: g) {
