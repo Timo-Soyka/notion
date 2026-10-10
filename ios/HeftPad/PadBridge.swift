@@ -520,7 +520,8 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
                 ProbeFolderPicker.pick(from: vc) { url in
                     guard let url else { reply(.success(false)); return }
                     self.work.async {
-                        let text = DTTGProbe.run(folder: url)
+                        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                        let text = isDir ? DTTGProbe.run(folder: url) : DTTGProbe.run(file: url)
                         DispatchQueue.main.async {
                             let nav = UINavigationController(rootViewController: ProbeReportController(text: text))
                             vc.present(nav, animated: true)

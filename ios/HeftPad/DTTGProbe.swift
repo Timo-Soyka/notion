@@ -10,6 +10,48 @@ import UniformTypeIdentifiers
 // enthält keine Inhalte von Einträgen, nur Namen, Größen und Kennungen.
 
 enum DTTGProbe {
+    /// Gewählt wurde eine einzelne Datei (DEVONthink To Go lässt Ordner nicht wählen):
+    /// Kennungen, Lesen, Zugriff auf den Ordner daneben und – nur bei „Heft-Test…“ –
+    /// Zurückschreiben desselben Inhalts
+    static func run(file: URL) -> String {
+        var out: [String] = []
+        let fm = FileManager.default
+        func ms(_ since: Date) -> String { String(format: "%.0f ms", Date().timeIntervalSince(since) * 1000) }
+        let scoped = file.startAccessingSecurityScopedResource()
+        defer { if scoped { file.stopAccessingSecurityScopedResource() } }
+        out.append("Heft \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") · iPadOS \(UIDevice.current.systemVersion)")
+        out.append("Datei: \(file.lastPathComponent) · Zugriff: \(scoped ? "ja" : "nein")")
+        out.append("Pfad: \(file.path)")
+        out.append(contentsOf: describe(file, label: "Datei"))
+
+        let tRead = Date()
+        let text = read(file)
+        out.append("")
+        out.append("— Lesen: " + (text.map { "\($0.count) Zeichen in \(ms(tRead))" } ?? "fehlgeschlagen"))
+        if let text { out.append("Verweise x-devonthink-item: \(text.components(separatedBy: "x-devonthink-item://").count - 1)") }
+
+        // Kommt Heft an den Ordner daneben (die Gruppe)?
+        let dir = file.deletingLastPathComponent()
+        out.append("")
+        do {
+            let kids = try fm.contentsOfDirectory(atPath: dir.path)
+            out.append("— Gruppe daneben lesbar: ja (\(kids.count) Einträge)")
+        } catch {
+            out.append("— Gruppe daneben lesbar: nein (\(error.localizedDescription))")
+        }
+        out.append(contentsOf: describe(dir, label: "Gruppe " + dir.lastPathComponent))
+
+        out.append("")
+        if file.lastPathComponent.hasPrefix("Heft-Test"), let text {
+            out.append("— Zurückschreiben (gleicher Inhalt): " + write(text, to: file))
+            out.append("Danach lesen: " + (read(file) == text ? "gleich" : "anders/fehlt"))
+            out.append(contentsOf: describe(file, label: "Datei danach"))
+        } else {
+            out.append("— Schreiben übersprungen (nur bei Dateien, die mit „Heft-Test“ beginnen)")
+        }
+        return out.joined(separator: "\n")
+    }
+
     static func run(folder: URL) -> String {
         var out: [String] = []
         let fm = FileManager.default
@@ -214,7 +256,7 @@ final class ProbeFolderPicker: NSObject, UIDocumentPickerDelegate {
         let p = ProbeFolderPicker()
         p.done = done
         current = p
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder, .item], asCopy: false)
         picker.allowsMultipleSelection = false
         picker.delegate = p
         vc.present(picker, animated: true)
