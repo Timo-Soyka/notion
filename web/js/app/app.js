@@ -59,6 +59,8 @@ export class App {
     try { this.settings = withDefaults(await call('settings.get')); } catch { this.settings = withDefaults({}); }
     setMathKeyboard(this.settings.mathKeyboard);
     this.applyTheme();
+    // Formelfeld rein/raus ändert, welcher Verlauf für die Pfeile gilt
+    for (const ev of ['focusin', 'focusout']) document.addEventListener(ev, () => setTimeout(() => this.updateHistoryButtons(), 0));
     this.sidebar.el.style.display = 'none';
     this.renderTopbar();
     // Auf dem iPad kommt alles fertig eingerichtet vom Mac (iCloud-Ordner)
@@ -234,7 +236,21 @@ export class App {
     const actions = h('div', { class: 'topbar-actions' });
     this.saveStateEl = h('span', { class: 'save-state' });
     actions.append(this.saveStateEl);
+    this.undoBtn = this.redoBtn = null;
     if (cur && cur.kind === 'note') {
+      // Rückgängig/Wiederholen zum Antippen (auf dem iPad gibt es oft kein ⌘Z)
+      const hist = (cmd, ic, tip, kbd) => {
+        const b = h('button', { class: 'btn icon-only', 'data-tip': tip, 'data-kbd': kbd, 'aria-label': tip, html: icon(ic) });
+        // Fokus behalten: ein offenes Formelfeld nimmt dann sein eigenes Rückgängig
+        b.addEventListener('pointerdown', (e) => e.preventDefault());
+        b.addEventListener('mousedown', (e) => e.preventDefault());
+        b.addEventListener('click', () => this.command(cmd));
+        return b;
+      };
+      this.undoBtn = hist('undo', 'undo', 'Rückgängig', '⌘Z');
+      this.redoBtn = hist('redo', 'redo', 'Wiederholen', '⌘⇧Z');
+      actions.append(this.undoBtn, this.redoBtn, h('span', { class: 'topbar-sep' }));
+      this.updateHistoryButtons();
       const pdfBtn = h('button', { class: 'btn', 'data-tip': 'PDF-Fassung neben dem Eintrag in DEVONthink ablegen', 'data-kbd': '⌘⇧P', html: icon('download', 'sm') + 'Als PDF ablegen' });
       pdfBtn.addEventListener('click', () => this.exportCompanion());
       const more = h('button', { class: 'btn icon-only', 'data-tip': 'Mehr', html: icon('more') });
@@ -255,6 +271,15 @@ export class App {
     }
     tb.append(actions);
     this.layoutChanged();
+  }
+
+  updateHistoryButtons() {
+    const ed = this.editor;
+    const a = document.activeElement;
+    // Im Formelfeld gilt dessen eigener Verlauf – dann nicht ausgrauen
+    const own = a && a.tagName === 'MATH-FIELD';
+    if (this.undoBtn) this.undoBtn.disabled = !own && !(ed && ed.canUndo());
+    if (this.redoBtn) this.redoBtn.disabled = !own && !(ed && ed.canRedo());
   }
 
   setSaveState(state) {
@@ -494,7 +519,8 @@ export class App {
       host: this.editorHost(),
       settings: this.settings,
       onChange: () => { this.dirty = true; this.touched = true; this.setSaveState('dirty'); this.scheduleSave(); },
-      onTitleChange: (t) => this.onTitleChange(t)
+      onTitleChange: (t) => this.onTitleChange(t),
+      onHistory: () => this.updateHistoryButtons()
     });
     this.editor.load(doc);
     this.sidebar.reveal(uuid);
