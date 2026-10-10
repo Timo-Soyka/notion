@@ -15,7 +15,6 @@ Keine Eingabe. Der Rücksprung zu Heft geschieht über x-callback von selbst.
 | Datei | Wer | Inhalt |
 |---|---|---|
 | `Abgleich.json` | Heft schreibt | `{"items": [ … ]}` in der Reihenfolge, in der sie auszuführen sind |
-| `Anhänge/<name>` | Heft schreibt | Bilder/PDFs, auf die `file` verweist (`"Anhänge/<name>"`) |
 | `Ergebnis.txt` | Kurzbefehl hängt an | je erledigtem Auftrag eine Zeile `id<Tab>Kennung` bzw. `id<Tab>FEHLER Text` |
 
 Kennung = UUID oder `x-devonthink-item://UUID` (Heft nimmt beides). Für Ändern,
@@ -33,10 +32,8 @@ Verweise (`uuid`, `parent`, `to`) sind immer echte DEVONthink-UUIDs. Objekt dazu
 | op | Felder | Aktionen |
 |---|---|---|
 | `write` | uuid, markdown, name? | Objekt abrufen → Inhalt aktualisieren (markdown); wenn name: Objektinfos aktualisieren (Name) |
-| `write-file` | uuid, file | Objekt abrufen → Inhalt aktualisieren mit der Datei `file` |
 | `create-note` | parent, name, markdown | Objekt abrufen (parent) → Objekt erstellen (Typ Markdown, Name, Inhalt, Ziel = parent) → Kennung des neuen Objekts |
 | `create-group` | parent, name | Objekt erstellen (Typ Gruppe, Name, Ziel = parent) → Kennung |
-| `create-file` | parent, name, file | Objekt erstellen aus Datei `file` (Name, Ziel = parent) → Kennung |
 | `rename` | uuid, name | Objektinfos aktualisieren (Name) |
 | `move` | uuid, to | Objekt bewegen (Ziel = to) |
 | `trash` | uuid | Objekt löschen |
@@ -58,3 +55,20 @@ Beispiel:
 2026-10-10T21-50-00Z-00042-AB12CD.json	5B0E…
 2026-10-10T21-50-05Z-00043-EF34GH.json	x-devonthink-item://C77D…
 ```
+
+Bilder und PDFs (`create-file`, `write-file`) gehen vorerst weiter über Heft am Mac;
+der Kurzbefehl bekommt nur die Text-Aufträge oben.
+
+## DTTG-Aktionen (com.devon-technologies.thinktogo4, aus Timos Vorlage)
+
+| Aktion | Parameter | Ausgabe |
+|---|---|---|
+| DTTGGetItemIntent („Objekt abrufen“) | uuid (Text, nimmt `x-devonthink-item://UUID`) | Objekt |
+| DTTGUpdateContentIntent („Inhalt aktualisieren“) | item, type `text`, text | |
+| DTTGUpdateItemMetadataIntent („Objektinfos aktualisieren“) | item, title, tags, comment, url, label, rating, flagged, unread, dateCreated, dateModified | |
+| DTTGCreateItemIntent („Objekt erstellen“) | group (Objekt), type (`markdown`, Gruppe?), title, markdown, tags, comment, url, label, flagged | Erstelltes Objekt |
+| DTTGMoveItemIntent („Objekt bewegen“) | item, toGroup (Objekt) | |
+| DTTGTrashItemIntent („Objekt löschen“) | item | |
+
+Objekt-Eigenschaften: `uuid`, `itemLink`, `title`, `json` … – für `Ergebnis.txt`
+die Eigenschaft `uuid` des erstellten bzw. geänderten Objekts.

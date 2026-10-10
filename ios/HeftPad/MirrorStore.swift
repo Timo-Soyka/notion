@@ -610,7 +610,8 @@ final class MirrorStore {
     /// Neues Bild/PDF (z. B. eingefügt in einen Eintrag): Anhang + Auftrag, sofort nutzbar
     func addFile(parent: String, name: String, ext: String, data: Data) throws -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
-        guard let root = orderRoot else { throw err("Kein Heft-Ordner gewählt") }
+        // Bilder und PDFs trägt immer Heft am Mac ein (die Kurzbefehle von DEVONthink To Go legen nur Text an)
+        guard let root else { throw err("Kein Heft-Ordner gewählt") }
         let tmp = newId()
         let cleanExt = ext.isEmpty ? "png" : ext.lowercased()
         // eigene Kopie im App-Speicher – der Anhang in iCloud wird nach dem Eintragen gelöscht
@@ -621,7 +622,7 @@ final class MirrorStore {
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let hash = Self.sha256(data)
         try coordinateWrite(data, to: root.appendingPathComponent(rel))
-        let id = try writeOrder(["op": "create-file", "tempId": tmp, "parent": parent, "name": name, "attachment": rel, "hash": hash])
+        let id = try writeOrder(["op": "create-file", "tempId": tmp, "parent": parent, "name": name, "attachment": rel, "hash": hash], mac: true)
         state.pending.append(Pending(id: id, op: "create-file", uuid: tmp, parent: parent, name: name, localFile: local.lastPathComponent, created: Date(), hash: hash))
         saveState()
         return ["uuid": tmp, "link": "x-devonthink-item://\(tmp)", "name": name]
@@ -630,7 +631,8 @@ final class MirrorStore {
     /// Geänderte Datei (Bild nach Bearbeitung, ausgefülltes PDF)
     func writeFile(_ id: String, data: Data) throws {
         lock.lock(); defer { lock.unlock() }
-        guard let root = orderRoot else { throw err("Kein Heft-Ordner gewählt") }
+        // Bilder und PDFs trägt immer Heft am Mac ein (die Kurzbefehle von DEVONthink To Go legen nur Text an)
+        guard let root else { throw err("Kein Heft-Ordner gewählt") }
         let uuid = resolve(id)
         // Noch nicht beim Mac angekommene neue Datei: Endung aus der eigenen Kopie
         let pendingExt = state.pending.last(where: { $0.uuid == uuid && $0.localFile != nil }).map { ($0.localFile! as NSString).pathExtension }
@@ -643,7 +645,7 @@ final class MirrorStore {
         let hash = Self.sha256(data)
         try coordinateWrite(data, to: root.appendingPathComponent(rel))
         let prev = replaceable(uuid, text: false)
-        let oid = try writeOrder(["op": "write", "uuid": uuid, "attachment": rel, "hash": hash])
+        let oid = try writeOrder(["op": "write", "uuid": uuid, "attachment": rel, "hash": hash], mac: true)
         if let prev { drop(prev) }
         thinOut(uuid)
         state.pending.append(Pending(id: oid, op: "write", uuid: uuid, localFile: att, created: Date(), hash: hash))
