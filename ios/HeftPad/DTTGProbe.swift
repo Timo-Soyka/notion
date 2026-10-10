@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 enum DTTGProbe {
     /// Gewählt wurde eine einzelne Datei (DEVONthink To Go lässt Ordner nicht wählen):
     /// Kennungen, Lesen, Zugriff auf den Ordner daneben und – nur bei „Heft-Test…“ –
-    /// Zurückschreiben desselben Inhalts
+    /// eine angehängte Zeile und ein Lesezeichen für die nächste Prüfung
     static func run(file: URL) -> String {
         var out: [String] = []
         let fm = FileManager.default
@@ -23,6 +23,8 @@ enum DTTGProbe {
         out.append("Datei: \(file.lastPathComponent) · Zugriff: \(scoped ? "ja" : "nein")")
         out.append("Pfad: \(file.path)")
         out.append(contentsOf: describe(file, label: "Datei"))
+        out.append("")
+        out.append(contentsOf: checkBookmark())
 
         let tRead = Date()
         let text = read(file)
@@ -43,9 +45,15 @@ enum DTTGProbe {
 
         out.append("")
         if file.lastPathComponent.hasPrefix("Heft-Test"), let text {
-            out.append("— Zurückschreiben (gleicher Inhalt): " + write(text, to: file))
-            out.append("Danach lesen: " + (read(file) == text ? "gleich" : "anders/fehlt"))
+            // Echte Änderung: eine Zeile anhängen, damit man in DEVONthink To Go
+            // (und danach auf dem Mac) sieht, ob sie ankommt
+            let line = "Heft " + DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .medium)
+            let changed = text + (text.hasSuffix("\n") || text.isEmpty ? "" : "\n") + line + "\n"
+            out.append("— Zeile angehängt („\(line)“): " + write(changed, to: file))
+            out.append("Danach lesen: " + (read(file) == changed ? "neuer Inhalt" : "anders/fehlt"))
             out.append(contentsOf: describe(file, label: "Datei danach"))
+            out.append("")
+            out.append(contentsOf: keepBookmark(file))
         } else {
             out.append("— Schreiben übersprungen (nur bei Dateien, die mit „Heft-Test“ beginnen)")
         }
@@ -144,6 +152,36 @@ enum DTTGProbe {
         out.append("")
         out.append("Gesamt: \(ms(t0))")
         return out.joined(separator: "\n")
+    }
+
+    private static let bookmarkKey = "dttg.probe.bookmark"
+
+    /// Merkt sich die Datei als Lesezeichen, damit die nächste Prüfung (auch nach
+    /// Neustart der App) zeigt, ob Heft ohne erneute Auswahl wieder herankommt
+    private static func keepBookmark(_ url: URL) -> [String] {
+        do {
+            let data = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(data, forKey: bookmarkKey)
+            return ["— Lesezeichen gespeichert (\(data.count) Bytes)"]
+        } catch {
+            return ["— Lesezeichen: Fehler \(error.localizedDescription)"]
+        }
+    }
+
+    /// Lesezeichen aus der vorigen Prüfung auflösen und ohne Auswahl lesen
+    private static func checkBookmark() -> [String] {
+        guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else { return ["— Lesezeichen von vorher: keins"] }
+        var stale = false
+        do {
+            let url = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let text = read(url)
+            return ["— Lesezeichen von vorher: \(url.lastPathComponent) · veraltet: \(stale ? "ja" : "nein") · Zugriff: \(scoped ? "ja" : "nein")",
+                    "Lesen ohne Auswahl: " + (text.map { "ok, \($0.count) Zeichen, letzte Zeile „\($0.split(separator: "\n").last ?? "")“" } ?? "fehlgeschlagen")]
+        } catch {
+            return ["— Lesezeichen von vorher: Fehler \(error.localizedDescription)"]
+        }
     }
 
     private static func write(_ text: String, to url: URL) -> String {
