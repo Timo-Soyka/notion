@@ -6,32 +6,35 @@ Heft: `ios/HeftPad/DTTGSync.swift`, `MirrorStore.dttgBatch()/dttgApply()`.
 
 ## Aufruf
 
-`shortcuts://x-callback-url/run-shortcut?name=Heft-Abgleich&x-success=heftpad://dttg/fertig&x-error=heftpad://dttg/fehler&x-cancel=heftpad://dttg/abbruch`
+`shortcuts://x-callback-url/run-shortcut?name=Heft-Abgleich&input=text&text=<JSON>&x-success=heftpad://dttg/fertig&x-error=heftpad://dttg/fehler&x-cancel=heftpad://dttg/abbruch`
 
-Zusätzlich `&input=text&text=<Inhalt von Abgleich.json>`: Der Kurzbefehl kann die
-Aufträge also auch direkt aus der „Kurzbefehleingabe“ lesen (Wörterbuch aus Eingabe)
-statt aus der Datei. Der Rücksprung zu Heft geschieht über x-callback von selbst.
+**Der Kurzbefehl braucht keine Datei-Aktionen** (kein „Datei abrufen“, kein „An
+Textdatei anhängen“, also auch keine Ordnerwahl):
 
-## Dateien („Auf meinem iPad → Heft → DEVONthink“ = Documents/DEVONthink der App)
+1. Aufträge lesen: „Wörterbuch abrufen“ aus **Kurzbefehleingabe** → `items`.
+2. „Wiederholen mit jedem Objekt“ in `items`: Auftrag ausführen (Tabelle unten), danach
+   die Zeile `id<Tab>Kennung` bzw. `id<Tab>FEHLER Text` an eine Textvariable `Ergebnis`
+   anhängen („Zur Variable hinzufügen“). Fehler einer DTTG-Aktion möglichst abfangen
+   (sonst bricht der ganze Lauf ab, siehe unten).
+3. Letzte Aktion: **„Ausgabe stoppen und ausgeben“** mit `Ergebnis` (Zeilen mit Zeilenumbruch
+   verbunden, „Text kombinieren“). Shortcuts hängt die Ausgabe an x-success als `result`
+   an; Heft liest sie daraus.
 
-| Datei | Wer | Inhalt |
-|---|---|---|
-| `Abgleich.json` | Heft schreibt | `{"items": [ … ]}` in der Reihenfolge, in der sie auszuführen sind |
-| `Ergebnis.txt` | Kurzbefehl hängt an | je erledigtem Auftrag eine Zeile `id<Tab>Kennung` bzw. `id<Tab>FEHLER Text` |
+Zum Testen per ▶ ohne Eingabe darf der Kurzbefehl einfach mit leerer Ausgabe enden.
+
+## Rückmeldung
 
 Kennung = UUID oder `x-devonthink-item://UUID` (Heft nimmt beides). Für Ändern,
 Umbenennen, Verschieben, Löschen genügt irgendein Wert (z. B. die UUID des Eintrags);
 für alles Neu-Angelegte muss es die Kennung des neuen Eintrags sein.
 
-Wichtig: Auch „An Textdatei anhängen“ muss auf den Ordner Heft → DEVONthink zeigen
-(ohne Ordner landet `Ergebnis.txt` in iCloud Drive → Kurzbefehle, Heft sieht dann
-nichts und meldet „keine Ergebnis.txt“; selbst wiederholt wird dann erst nach
-„Jetzt abgleichen“, damit nichts doppelt angelegt wird). Alternativ oder zusätzlich
-kann der Kurzbefehl am Ende dieselben Zeilen mit „Ausgabe stoppen und ausgeben“
-zurückgeben; Heft liest sie aus dem `result` von x-success.
-
-Die Zeile wird **nach jedem Auftrag** angehängt („An Textdatei anhängen“), damit bei
-einem Abbruch mitten im Stapel nichts doppelt angelegt wird.
+Heft liest zusätzlich (Altvariante) `Ergebnis.txt` aus „Auf meinem iPad → Heft →
+DEVONthink“ und schreibt dort weiterhin `Abgleich.json`; beides ist optional.
+Kommt ein Lauf erfolgreich zurück, aber ohne eine einzige Rückmeldezeile, meldet Heft
+das und startet nicht mehr selbst neu (sonst würde Neues doppelt angelegt), bis
+„Jetzt abgleichen“ getippt wird. Bricht der Kurzbefehl mitten im Stapel ab, gehen die
+Rückmeldungen dieses Laufs verloren – bereits Angelegtes würde beim nächsten Lauf
+erneut angelegt. Darum Fehler je Auftrag abfangen und als `FEHLER` melden.
 
 ## Aufträge (`items[]`)
 
@@ -58,7 +61,7 @@ Beispiel:
 ]}
 ```
 
-`Ergebnis.txt` danach:
+Ausgabe (`result`) danach:
 
 ```
 2026-10-10T21-50-00Z-00042-AB12CD.json	5B0E…
@@ -79,5 +82,5 @@ der Kurzbefehl bekommt nur die Text-Aufträge oben.
 | DTTGMoveItemIntent („Objekt bewegen“) | item, toGroup (Objekt) | |
 | DTTGTrashItemIntent („Objekt löschen“) | item | |
 
-Objekt-Eigenschaften: `uuid`, `itemLink`, `title`, `json` … – für `Ergebnis.txt`
+Objekt-Eigenschaften: `uuid`, `itemLink`, `title`, `json` … – für die Rückmeldung
 die Eigenschaft `uuid` des erstellten bzw. geänderten Objekts.
