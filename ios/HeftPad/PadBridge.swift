@@ -496,7 +496,7 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
 
         case "sync.now" where DTTGSync.enabled:
             // Abgleich ohne Mac: Kurzbefehl „Heft-Abgleich“ starten
-            DispatchQueue.main.async { reply(.success(["ok": true, "dttg": true, "started": DTTGSync.start()])) }
+            DispatchQueue.main.async { let started = DTTGSync.start(); reply(.success(["ok": true, "dttg": true, "started": started, "running": !started && DTTGSync.running])) }
 
         case "dttg.enable":
             let on = a["enabled"] as? Bool

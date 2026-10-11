@@ -327,7 +327,7 @@ function ipadPage(app, save) {
     dttgNow.addEventListener('click', async () => {
       try {
         const r = await call('sync.now');
-        if (r && r.dttg && !r.started) toast('Nichts abzugleichen.', { type: 'success' });
+        if (r && r.dttg && !r.started) toast(r.running ? 'Abgleich läuft schon – bitte warten, bis Kurzbefehle zurückspringt.' : 'Nichts abzugleichen.', { type: 'success' });
       } catch (e) { toast('Abgleich fehlgeschlagen: ' + e.message, { type: 'error' }); }
       refresh();
     });
