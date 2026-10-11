@@ -1,37 +1,55 @@
-// Pencil-Modus im Hefteintrag (iPad).
+// Modus im Hefteintrag (iPad): Schreiben oder Blöcke – streng getrennt.
 //
-// Doppeltippen auf den Apple Pencil wechselt zwischen
-//   • Schreiben: wie gewohnt, Scribble schreibt in die Textfelder
-//   • Blöcke:    Antippen öffnet das Blockmenü, Ziehen verschiebt den Block;
-//                Scribble ist aus (die App nimmt es der Web-Ansicht weg,
-//                dazu .pen-grip in editor.css als Rückfall)
-// Den Modus führt die App (sie hört das Doppeltippen) und meldet ihn mit
-// „pen-mode“. Arbeitsblätter haben ihr eigenes Doppeltippen (PadPDFEditor).
+//   • Schreiben (Standard): nur schreiben. Keine Griffe (+ und ⋮⋮), kein
+//     Blockmenü, kein Verschieben – weder mit Pencil noch Finger oder Maus.
+//     Scribble ist an.
+//   • Blöcke: Griffe sichtbar; mit dem Pencil ist der ganze Block Griff –
+//     Antippen öffnet das Blockmenü, Ziehen verschiebt. Scribble ist aus
+//     (die App nimmt es der Web-Ansicht weg, dazu .pen-grip in editor.css).
+//
+// Umschalten: Doppeltippen auf den Apple Pencil (die App hört es und meldet
+// „pen-mode“) oder der Knopf unten in der Mitte (meldet es der App mit
+// „pen.mode“, damit sie Scribble mitschaltet). Arbeitsblätter haben ihr
+// eigenes Doppeltippen (PadPDFEditor). Am Mac bleibt alles beim Alten.
 
 import { h, toast, closeAllPopovers } from '../ui/ui.js';
 import { icon } from '../ui/icons.js';
-import { on } from '../bridge.js';
+import { on, call, isPad, isNative } from '../bridge.js';
 
 let blocks = false;
 let badge = null;
 
 export const penBlocks = () => blocks;
+// Ist das Blockmenü samt Griffen gerade gesperrt?
+export const writeOnly = () => isPad && !blocks;
 
-function set(on) {
-  if (on === blocks) return;
-  blocks = on;
-  document.documentElement.classList.toggle('pen-blocks', on);
-  if (on) {
-    // Offenes Textfeld schließen – sonst schreibt man noch hinein
-    const a = document.activeElement;
-    if (a && a !== document.body && a.blur) a.blur();
-    if (!badge) badge = h('div', { class: 'pen-mode-badge', html: icon('grip', 'sm') + '<span>Pencil: Blöcke</span>' });
-    document.body.append(badge);
-  } else {
-    badge && badge.remove();
-    closeAllPopovers();
-  }
-  toast(on ? 'Pencil: Blöcke – Antippen öffnet das Menü, Ziehen verschiebt' : 'Pencil: Schreiben', { timeout: 1800 });
+function render() {
+  const root = document.documentElement;
+  root.classList.toggle('pen-blocks', blocks);
+  root.classList.toggle('pen-write', !blocks);
+  if (!badge) return;
+  badge.innerHTML = icon(blocks ? 'grip' : 'pencil', 'sm') + `<span>${blocks ? 'Blöcke' : 'Schreiben'}</span>`;
+  badge.dataset.tip = blocks ? 'Antippen: zurück zum Schreiben' : 'Antippen: Blöcke verschieben und Blockmenü';
 }
 
-on('pen-mode', (p) => set(!!(p && p.blocks)));
+function set(on, { tell = false } = {}) {
+  if (on === blocks) return;
+  blocks = on;
+  // Offenes Textfeld schließen (sonst schreibt man noch hinein) bzw. offene Blockmenüs
+  const a = document.activeElement;
+  if (on && a && a !== document.body && a.blur) a.blur();
+  closeAllPopovers();
+  render();
+  if (tell && isNative) call('pen.mode', { blocks: on }).catch(() => {});
+  toast(on ? 'Blöcke: Antippen öffnet das Menü, Ziehen verschiebt' : 'Schreiben', { timeout: 1600 });
+}
+
+if (isPad) {
+  on('pen-mode', (p) => set(!!(p && p.blocks)));
+  badge = h('button', { class: 'pen-mode-badge' });
+  // Nicht den Fokus aus dem Textfeld nehmen; umschalten erst beim Loslassen
+  badge.addEventListener('mousedown', (e) => e.preventDefault());
+  badge.addEventListener('click', (e) => { e.preventDefault(); set(!blocks, { tell: true }); });
+  const mount = () => { document.body.append(badge); render(); };
+  if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
+}
