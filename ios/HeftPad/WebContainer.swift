@@ -190,6 +190,7 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
 
     // Blöcke: Der Pencil fasst Blöcke an (Menü, Verschieben) statt zu schreiben.
     // Dafür bekommt die Web-Ansicht ihre Scribble-Erkennung für die Zeit weggenommen.
+    // Umschalten per Doppeltippen oder über den Knopf der Oberfläche („pen.mode“).
     private var penBlocks = false
     private var removedScribble: [(UIView, UIInteraction)] = []
 
@@ -201,7 +202,8 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         setPenBlocks(!penBlocks)
     }
 
-    private func setPenBlocks(_ on: Bool) {
+    func setPenBlocks(_ on: Bool) {
+        guard on != penBlocks else { return }
         penBlocks = on
         if on {
             removedScribble = []

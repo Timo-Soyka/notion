@@ -6,7 +6,7 @@ import { icon } from '../ui/icons.js';
 import { block, isEmptyHTML } from '../core/markdown.js';
 import { segsToText, htmlToSegs } from '../core/inline.js';
 import { isPalm, onPenDown } from '../palm.js';
-import { penBlocks } from './penmode.js';
+import { penBlocks, writeOnly } from './penmode.js';
 
 const CAN_NEST = (b) => !['columns', 'column', 'hr', 'pagebreak', 'toc'].includes(b.type);
 
@@ -135,7 +135,7 @@ export function attachDnd(ed) {
 
   let raf = 0, pending = null;
   d.addEventListener('mousemove', (e) => {
-    if (dragging || ed.readonly) return;
+    if (dragging || ed.readonly || writeOnly()) return;
     hidden = false;
     if (e.target.closest('.blk-handle')) return;
     pending = { x: e.clientX, y: e.clientY };
@@ -290,7 +290,7 @@ export function attachDnd(ed) {
     }
   };
   grip.addEventListener('mousedown', (e) => {
-    if (e.button !== 0 || !hoverBlock) return;
+    if (e.button !== 0 || !hoverBlock || writeOnly()) return;
     e.preventDefault();
     startDrag(hoverBlock, e.clientX, e.clientY);
   });
@@ -316,6 +316,8 @@ export function attachDnd(ed) {
   };
   d.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' || ed.readonly || isPalm(e)) return;
+    // Modus „Schreiben“ (penmode.js): kein Griff, kein Menü, kein Verschieben
+    if (writeOnly()) return;
     // Finger: jede Berührung, nicht nur die erste. Liegt schon etwas auf (meist der
     // Handballen), ist der Finger am Griff nicht mehr die „erste“ Berührung – er
     // käme sonst nie an, und Menü und Ziehen gingen nicht, solange die Hand aufliegt.
@@ -328,7 +330,7 @@ export function attachDnd(ed) {
     if (hoverBlock && !ed.byId.has(hoverBlock.id)) { hoverBlock = null; handle.classList.remove('show'); }
     const blockMode = e.pointerType === 'pen' && penBlocks();
     const b = gripTarget(e) || (blockMode ? penBlockTarget(e) : null);
-    if (e.pointerType === 'pen') shield(blockMode || !!b);
+    if (e.pointerType === 'pen') shield(blockMode);
     if (!b) return;
     // Keine nachgemachten Mausklicks, nichts darunter reagiert (offene Menüs schließt commit unten)
     e.preventDefault();
@@ -349,20 +351,19 @@ export function attachDnd(ed) {
   // Solange der Griff gehalten wird: kein Scrollen
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });
 
-  // Pencil am Griff: Scribble (Handschrift) sucht beim Aufsetzen Textfelder im
-  // Umkreis des Stifts und übernimmt den Strich, sobald eines in der Nähe ist –
-  // der Text des Blocks steht direkt neben dem Griff, das Ziehen bräche ab.
-  // preventDefault auf touchstart hält Scribble nicht auf. Deshalb sind
-  // Textfelder für die Trefferprüfung unsichtbar (pointer-events: none, siehe
-  // .pen-grip in editor.css), solange der Stift über der Griffzone schwebt oder
-  // den Griff hält – im Modus „Blöcke“ überall –; dann findet Scribble keins.
+  // Pencil im Modus „Blöcke“: Scribble (Handschrift) sucht beim Aufsetzen
+  // Textfelder im Umkreis des Stifts und übernähme den Strich – das Ziehen
+  // bräche ab. preventDefault auf touchstart hält Scribble nicht auf, und die
+  // App schaltet es nur nativ ab. Als Rückfall sind Textfelder für die
+  // Trefferprüfung unsichtbar (pointer-events: none, siehe .pen-grip in
+  // editor.css), solange der Stift über dem Eintrag schwebt oder einen Block hält.
   const shield = (on) => d.classList.toggle('pen-grip', on);
   let hoverRaf = 0, hoverAtPen = null;
   d.addEventListener('pointermove', (e) => {
     if (e.pointerType !== 'pen' || e.buttons || touchGrab || dragging || ed.readonly) return;
     hoverAtPen = { target: e.target, clientX: e.clientX, clientY: e.clientY };
     if (hoverRaf) return;
-    hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; if (!touchGrab) shield(penBlocks() || !!gripTarget(hoverAtPen)); });
+    hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; if (!touchGrab) shield(penBlocks()); });
   }, true);
   d.addEventListener('pointerleave', (e) => { if (e.pointerType === 'pen' && !touchGrab) shield(false); });
 

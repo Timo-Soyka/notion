@@ -395,8 +395,12 @@ span[data-c="purple"] { color: var(--t-purple); } span[data-c="pink"] { color: v
 .blk-handle .grip:active { cursor: grabbing; }
 /* iPad: Pencil über oder auf dem Griff – Scribble soll kein Textfeld finden (dnd.js) */
 .pen-grip [contenteditable="true"], .pen-grip [contenteditable="true"] *, .pen-grip textarea, .pen-grip input, .pen-grip math-field { pointer-events: none !important; }
-/* iPad: Pencil im Modus „Blöcke“ (Doppeltippen, penmode.js) – Hinweis unten in der Mitte */
-.pen-mode-badge { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 2500; display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--bg); color: var(--fg); box-shadow: var(--shadow-pop); font-family: var(--font-ui); font-size: 13px; pointer-events: none; }
+/* iPad: Modus Schreiben/Blöcke (penmode.js) – im Schreibmodus keine Griffe;
+   der Knopf unten in der Mitte zeigt den Modus und schaltet um */
+html.pen-write .blk-handle { display: none !important; }
+.pen-mode-badge { display: none; }
+html.ipad body:has(.doc .blocks) .pen-mode-badge { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 1900; display: flex; align-items: center; gap: 6px; padding: 7px 14px; border: 0; border-radius: 999px; background: var(--bg); color: var(--fg); box-shadow: var(--shadow-pop); font-family: var(--font-ui); font-size: 13px; cursor: pointer; }
+html.pen-blocks .pen-mode-badge { background: var(--fg); color: var(--bg); }
 .drop-indicator { position: absolute; height: 3px; background: rgba(35, 131, 226, 0.5); border-radius: 2px; pointer-events: none; z-index: 40; }
 .drop-indicator.vertical { width: 3px; height: auto; }
 .drag-ghost { position: fixed; z-index: 3000; pointer-events: none; opacity: 0.55; max-width: 600px; background: var(--bg); border-radius: 4px; padding: 2px 6px; box-shadow: var(--shadow-pop); font-family: var(--font-ui); font-size: 14px; }
