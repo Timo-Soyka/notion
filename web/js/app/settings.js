@@ -332,11 +332,19 @@ function ipadPage(app, save) {
       refresh();
     });
     const dttgRow = row('Abgleich jetzt', 'Öffnet kurz den Kurzbefehl „Heft-Abgleich“, trägt alle offenen Änderungen in DEVONthink To Go ein und springt zurück.', dttgNow);
-    dttgRow.style.display = 'none';
-    call('sync.info').then(i => { dttgSwitch.querySelector('input').checked = !!i.dttg; dttgRow.style.display = i.dttg ? '' : 'none'; }).catch(() => {});
+    const dttgAuto = sw(true, async (v) => {
+      try { await call('dttg.enable', { auto: v }); } catch (e) { toast('Nicht möglich: ' + e.message, { type: 'error' }); }
+    });
+    const dttgAutoRow = row('Automatisch abgleichen', 'Beim Wechsel zu einem anderen Eintrag und 45 Sekunden nach der letzten Änderung. Ausgeschaltet nur über „Jetzt abgleichen“.', dttgAuto);
+    dttgRow.style.display = dttgAutoRow.style.display = 'none';
+    call('sync.info').then(i => {
+      dttgSwitch.querySelector('input').checked = !!i.dttg;
+      dttgAuto.querySelector('input').checked = i.dttgAuto !== false;
+      dttgRow.style.display = dttgAutoRow.style.display = i.dttg ? '' : 'none';
+    }).catch(() => {});
     const dttgSwitch = sw(false, async (v) => {
       try { await call('dttg.enable', { enabled: v }); } catch (e) { toast('Nicht möglich: ' + e.message, { type: 'error' }); }
-      dttgRow.style.display = v ? '' : 'none';
+      dttgRow.style.display = dttgAutoRow.style.display = v ? '' : 'none';
       refresh();
     });
     return [
@@ -344,6 +352,7 @@ function ipadPage(app, save) {
       h('p', { class: 'desc', text: 'Deine Einträge kommen über iCloud Drive vom Mac. Was du hier änderst, trägt entweder Heft am Mac in DEVONthink ein (der Mac muss an sein) – oder, ohne Mac, DEVONthink To Go über den Kurzbefehl „Heft-Abgleich“. Es gilt immer die zuletzt gespeicherte Fassung.' }),
       h('div', { class: 'set-row' }, h('div', { class: 'l' }, h('div', { class: 't', text: 'Stand' }), status), h('div', { class: 'r' }, change)),
       row('Über DEVONthink To Go (ohne Mac)', 'Änderungen gehen nicht mehr über den Mac, sondern direkt in DEVONthink To Go; das gleicht dann selbst mit dem Mac ab. Braucht den Kurzbefehl „Heft-Abgleich“. Beim Ausschalten übernimmt wieder Heft am Mac, was noch offen ist.', dttgSwitch),
+      dttgAutoRow,
       dttgRow,
       row('DEVONthink To Go prüfen', 'Prüft, ob Heft eine Datei aus DEVONthink To Go über die Dateien-App lesen und beschreiben kann.', probe),
       h('h3', { text: 'Eingabe' }),

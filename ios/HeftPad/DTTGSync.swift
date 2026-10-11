@@ -82,6 +82,42 @@ enum DTTGSync {
         }
     }
 
+    // MARK: - Automatisch
+
+    /// Selbst abgleichen (sonst nur über „Jetzt abgleichen“)
+    static var auto: Bool {
+        get { UserDefaults.standard.object(forKey: "dttgAuto") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "dttgAuto") }
+    }
+    /// Ruhezeit nach der letzten Änderung, bevor der Kurzbefehl kommt – nicht
+    /// mitten im Schreiben zu Kurzbefehle springen
+    private static let idleDelay: TimeInterval = 45
+    private static var idleWork: DispatchWorkItem?
+    private static var lastNote: String?
+
+    /// Nach einer Änderung (Hauptthread): abgleichen, sobald eine Weile nichts mehr geändert wurde
+    static func changed() {
+        guard enabled, auto else { return }
+        idleWork?.cancel()
+        let w = DispatchWorkItem {
+            guard UIApplication.shared.applicationState == .active else { return }
+            start()
+        }
+        idleWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + idleDelay, execute: w)
+    }
+
+    /// Anderer Eintrag geöffnet (Hauptthread): Offenes vom vorigen gleich abgleichen
+    static func opened(_ uuid: String) {
+        defer { if !uuid.isEmpty { lastNote = uuid } }
+        guard enabled, auto, let prev = lastNote, prev != uuid, !uuid.isEmpty, queuedCount > 0 else { return }
+        idleWork?.cancel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            guard UIApplication.shared.applicationState == .active else { return }
+            start()
+        }
+    }
+
     // MARK: - Ablauf
 
     private static var startedAt: Date?
