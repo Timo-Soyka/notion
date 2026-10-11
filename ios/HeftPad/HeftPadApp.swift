@@ -28,6 +28,7 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .heftResetFolder)) { _ in ready = false }
         // Rücksprung vom Kurzbefehl „Heft-Abgleich“ (DEVONthink To Go)
         .onOpenURL { DTTGSync.handle($0) }
+        .onAppear { DTTGSync.prepare() }
     }
 }
 
