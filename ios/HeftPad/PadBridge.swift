@@ -77,6 +77,17 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     private func handle(_ cmd: String, _ a: [String: Any], _ reply: @escaping (Result<Any, Error>) -> Void) {
         let s = { (k: String) -> String in (a[k] as? String) ?? "" }
+        // Abgleich über DEVONthink To Go: nach Änderungen (bei Ruhe) und beim Wechsel des Eintrags
+        if DTTGSync.enabled {
+            switch cmd {
+            case "note.write", "note.create", "group.create", "record.rename", "record.move", "record.trash":
+                DispatchQueue.main.async { DTTGSync.changed() }
+            case "note.read":
+                let uuid = s("uuid")
+                DispatchQueue.main.async { DTTGSync.opened(uuid) }
+            default: break
+            }
+        }
         switch cmd {
         case "app.info":
             reply(.success(["version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1", "native": true, "platform": "ipad"]))
@@ -483,10 +494,12 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
             DispatchQueue.main.async { reply(.success(["ok": true, "dttg": true, "started": DTTGSync.start()])) }
 
         case "dttg.enable":
-            let on = a["enabled"] as? Bool ?? false
+            let on = a["enabled"] as? Bool
+            let auto = a["auto"] as? Bool
             DispatchQueue.main.async {
-                DTTGSync.setEnabled(on)
-                reply(.success(["enabled": DTTGSync.enabled]))
+                if let on { DTTGSync.setEnabled(on) }
+                if let auto { DTTGSync.auto = auto }
+                reply(.success(["enabled": DTTGSync.enabled, "auto": DTTGSync.auto]))
             }
 
         case "sync.now":
@@ -544,7 +557,7 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
 
         case "sync.info":
             bg(reply) { ["enabled": true, "label": self.syncLabel(), "pending": self.store.pendingCount,
-                         "dttg": DTTGSync.enabled, "dttgQueued": DTTGSync.queuedCount] }
+                         "dttg": DTTGSync.enabled, "dttgAuto": DTTGSync.auto, "dttgQueued": DTTGSync.queuedCount] }
 
         default:
             reply(.failure(err("Auf dem iPad noch nicht verfügbar (\(cmd))")))
