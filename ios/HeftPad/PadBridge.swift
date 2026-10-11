@@ -21,6 +21,8 @@ protocol PadHost: AnyObject {
     func setOverlayRect(_ rect: CGRect)
     var overlay: PadOverlay? { get }
     func overlayVisible(_ visible: Bool) -> String?
+    // Hefteintrag: Pencil fasst Blöcke an statt zu schreiben (Scribble aus)
+    func setPenBlocks(_ on: Bool)
 }
 
 final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
@@ -78,6 +80,9 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
     private func handle(_ cmd: String, _ a: [String: Any], _ reply: @escaping (Result<Any, Error>) -> Void) {
         let s = { (k: String) -> String in (a[k] as? String) ?? "" }
         switch cmd {
+        case "pen.mode":
+            let on = a["blocks"] as? Bool ?? false
+            DispatchQueue.main.async { self.host?.setPenBlocks(on); reply(.success(true)) }
         case "app.info":
             reply(.success(["version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1", "native": true, "platform": "ipad"]))
 

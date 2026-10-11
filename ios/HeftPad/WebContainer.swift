@@ -11,7 +11,7 @@ struct WebContainer: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: WebController, context: Context) {}
 }
 
-final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUIDelegate {
+final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUIDelegate, UIPencilInteractionDelegate {
     private(set) var webView: WKWebView!
     private var bridge: PadBridge!
     private var timer: Timer?
@@ -59,6 +59,10 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         // Erste Berührung mit dem Pencil: der Oberfläche Bescheid geben (Schreibfeld für Formeln)
         watcher.onPencil = { [weak self] in self?.emit("pencil-seen", [:]) }
         webView.addGestureRecognizer(watcher)
+        // Doppeltippen auf den Pencil: Schreiben ↔ Blöcke (siehe penmode.js)
+        let pencilTap = UIPencilInteraction()
+        pencilTap.delegate = self
+        webView.addInteraction(pencilTap)
         let setter = NSSelectorFromString("_setInputDelegate:")
         if webView.responds(to: setter) { webView.perform(setter, with: focusPolicy) }
         webView.load(URLRequest(url: URL(string: "heft://app/index.html")!))
@@ -180,6 +184,48 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         let snap = o.snapshot()
         o.view.isHidden = true
         return snap
+    }
+
+    // MARK: - Pencil-Modus im Hefteintrag
+
+    // Blöcke: Der Pencil fasst Blöcke an (Menü, Verschieben) statt zu schreiben.
+    // Dafür bekommt die Web-Ansicht ihre Scribble-Erkennung für die Zeit weggenommen.
+    // Umschalten per Doppeltippen oder über den Knopf der Oberfläche („pen.mode“).
+    private var penBlocks = false
+    private var removedScribble: [(UIView, UIInteraction)] = []
+
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+        // Arbeitsblätter haben ihr eigenes Doppeltippen (PadPDFEditor)
+        if let e = pdfEditor, !e.isHidden { return }
+        if let o = overlay, !o.view.isHidden { return }
+        if UIPencilInteraction.preferredTapAction == .ignore { return }
+        setPenBlocks(!penBlocks)
+    }
+
+    func setPenBlocks(_ on: Bool) {
+        guard on != penBlocks else { return }
+        penBlocks = on
+        if on {
+            removedScribble = []
+            var stack: [UIView] = [webView]
+            while let v = stack.popLast() {
+                // UIIndirectScribbleInteraction ist generisch – am Namen erkennen
+                for i in v.interactions where i is UIScribbleInteraction || String(describing: type(of: i)).contains("ScribbleInteraction") {
+                    v.removeInteraction(i)
+                    removedScribble.append((v, i))
+                }
+                stack.append(contentsOf: v.subviews)
+            }
+        } else {
+            for (v, i) in removedScribble { v.addInteraction(i) }
+            removedScribble = []
+        }
+        emit("pen-mode", ["blocks": on])
+    }
+
+    // Seite neu geladen: wieder schreiben
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if penBlocks { setPenBlocks(false) }
     }
 
     // Links nach außen im Browser öffnen, heft:// bleibt in der App
