@@ -41,6 +41,16 @@ enum DTTGSync {
         return dir
     }
 
+    /// Austauschordner anlegen, damit „Heft → DEVONthink“ in der Dateien-App erscheint
+    /// (die Dateien-App zeigt den Ordner der App erst, wenn darin etwas liegt) –
+    /// so lässt er sich im Kurzbefehl auswählen, bevor der erste Abgleich läuft
+    static func prepare() {
+        let note = exchangeDir.appendingPathComponent("Liesmich.txt")
+        guard !FileManager.default.fileExists(atPath: note.path) else { return }
+        let text = "Austauschordner zwischen Heft und dem Kurzbefehl „\(shortcutName)“.\nIm Kurzbefehl bei „Datei abrufen“ und „An Textdatei anhängen“ diesen Ordner wählen.\n"
+        try? Data(text.utf8).write(to: note, options: .atomic)
+    }
+
     private static var orderDir: URL { queueRoot.appendingPathComponent("Aufträge", isDirectory: true) }
 
     static func isQueued(_ id: String) -> Bool {
