@@ -174,75 +174,118 @@ enum DTTGSync {
             // dann braucht er keinen Dateizugriff zum Lesen
             URLQueryItem(name: "input", value: "text"),
             URLQueryItem(name: "text", value: json),
-            URLQueryItem(name: "x-success", value: "heftpad://dttg/fertig"),
-            URLQueryItem(name: "x-error", value: "heftpad://dttg/fehler"),
-            URLQueryItem(name: "x-cancel", value: "heftpad://dttg/abbruch"),
+            URLQueryItem(name: "x-success", value: "heftpad://dttg/fertig?run=\(run + 1)"),
+            URLQueryItem(name: "x-error", value: "heftpad://dttg/fehler?run=\(run + 1)"),
+            URLQueryItem(name: "x-cancel", value: "heftpad://dttg/abbruch?run=\(run + 1)"),
         ]
         guard let url = c.url else { return false }
         startedAt = Date()
         sent = batch.items.count
+        run += 1
+        runOpen = true
+        runDone = 0
+        runProgress = false
+        runMessages = []
         // Kurz warten, bis die Datei in der Dateien-Ablage sichtbar ist – sonst meldet
         // „Datei abrufen“ im Kurzbefehl, sie sei nicht vorhanden
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             UIApplication.shared.open(url) { ok in
                 guard !ok else { return }
                 startedAt = nil
+                runOpen = false
                 finish(messages: ["Kurzbefehle lässt sich nicht öffnen."])
             }
         }
         return true
     }
 
-    /// Rücksprung vom Kurzbefehl (heftpad://dttg/fertig|fehler|abbruch)
+    // Laufender Lauf: Nummer (steckt in den x-callback-Adressen, damit ein verspäteter
+    // Rücksprung keinen späteren Lauf beendet) und was bisher zurückkam
+    private static var run = 0
+    private static var runOpen = false
+    private static var runDone = 0
+    private static var runProgress = false
+    private static var runMessages: [String] = []
+    private static var closeWork: DispatchWorkItem?
+
+    /// Rücksprung vom Kurzbefehl:
+    ///   heftpad://dttg/ergebnis?result=…   – vom Kurzbefehl selbst geöffnet („URL öffnen“), mit den Ergebniszeilen
+    ///   heftpad://dttg/fertig|fehler|abbruch?run=N – x-callback von Kurzbefehle
+    /// Ergebniszeilen werden außerdem aus dem result von x-success und aus Ergebnis.txt gelesen.
     @discardableResult
     static func handle(_ url: URL) -> Bool {
         guard url.scheme == "heftpad", url.host == "dttg" else { return false }
-        startedAt = nil
+        let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if let r = q.first(where: { $0.name == "run" })?.value, r != String(run) { return true }
         let fm = FileManager.default
         let resultURL = exchangeDir.appendingPathComponent("Ergebnis.txt")
         var text = (try? String(contentsOf: resultURL, encoding: .utf8)) ?? ""
-        // Zusätzlich die Ausgabe des Kurzbefehls („Ausgabe stoppen und ausgeben“),
-        // die x-success als result mitliefert – braucht keinen Dateizugriff
-        let out = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "result" })?.value
+        try? fm.removeItem(at: resultURL)
+        let out = q.first(where: { $0.name == "result" })?.value
         if let out { text += "\n" + out }
-        // Zur Fehlersuche: letzten Rücksprung festhalten (Dateien-App → Heft → DEVONthink)
-        let log = "\(ISO8601DateFormatter().string(from: Date()))\n\(url.absoluteString)\n\nresult: \(out.map { "\($0.count) Zeichen" } ?? "fehlt")\n\(out ?? "")\n"
-        try? Data(log.utf8).write(to: exchangeDir.appendingPathComponent("Letzter Rücksprung.txt"), options: .atomic)
+        // Zur Fehlersuche: Rücksprünge festhalten (Dateien-App → Heft → DEVONthink)
+        let logURL = exchangeDir.appendingPathComponent("Letzter Rücksprung.txt")
+        let old = url.path == "/ergebnis" ? "" : ((try? String(contentsOf: logURL, encoding: .utf8)) ?? "")
+        let log = old + "\(ISO8601DateFormatter().string(from: Date()))  \(url.path)  result: \(out.map { "\($0.count) Zeichen" } ?? "fehlt")\n\(out ?? "")\n\n"
+        try? Data(log.utf8).write(to: logURL, options: .atomic)
         let results: [(id: String, value: String)] = text.split(whereSeparator: \.isNewline).compactMap { line in
             let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
             guard parts.count == 2, !parts[0].isEmpty else { return nil }
             return (parts[0].trimmingCharacters(in: .whitespaces), parts[1])
         }
-        try? fm.removeItem(at: resultURL)
+        if !results.isEmpty {
+            let r = MirrorStore.shared.dttgApply(results)
+            runDone += results.count
+            runProgress = runProgress || r.progress
+            runMessages += r.failures
+        }
+        if url.path == "/ergebnis" {
+            // Gleich danach kommt meist noch x-success; kommt es nicht, Lauf trotzdem abschließen
+            closeWork?.cancel()
+            let w = DispatchWorkItem { close("/fertig", nil) }
+            closeWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: w)
+        } else {
+            close(url.path, q.first { $0.name == "errorMessage" }?.value)
+        }
+        return true
+    }
+
+    private static func close(_ path: String, _ why: String?) {
+        closeWork?.cancel()
+        closeWork = nil
+        guard runOpen else { return }
+        runOpen = false
+        startedAt = nil
+        let fm = FileManager.default
         // Bei Fehler/Abbruch liegen lassen: so sieht man in der Dateien-App, was übergeben wurde
-        if url.path == "/fertig" {
+        if path == "/fertig" {
             try? fm.removeItem(at: exchangeDir.appendingPathComponent("Abgleich.json"))
             try? fm.removeItem(at: exchangeDir.appendingPathComponent("Anhänge"))
         }
-
-        let r = MirrorStore.shared.dttgApply(results)
-        var messages = r.failures
-        switch url.path {
+        var messages = runMessages
+        switch path {
         case "/fehler":
-            let why = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "errorMessage" }?.value
             messages.append("Kurzbefehl „\(shortcutName)“ ist mit einem Fehler beendet" + (why.map { ": \($0)" } ?? "."))
         case "/abbruch":
             messages.append("Abgleich mit DEVONthink To Go abgebrochen.")
         default:
-            // Lief durch, meldete aber nichts: Ergebnis.txt liegt woanders (Ordner bei
-            // „An Textdatei anhängen“) – sonst würde dasselbe immer wieder angelegt
-            if results.isEmpty, sent > 0 {
+            // Lief durch, meldete aber nichts – sonst würde dasselbe immer wieder angelegt
+            if runDone == 0, sent > 0 {
                 stalled = true
-                messages.append("Kurzbefehl „\(shortcutName)“ lief, hat aber nichts zurückgemeldet (" + (out == nil ? "keine Ausgabe" : "Ausgabe ohne Ergebniszeilen") + "). Heft wiederholt erst nach „Jetzt abgleichen“; bitte in DEVONthink To Go nach doppelten Einträgen sehen. Details: Heft → DEVONthink → Letzter Rücksprung.txt")
+                messages.append("Kurzbefehl „\(shortcutName)“ lief, hat aber nichts zurückgemeldet. Heft wiederholt erst nach „Jetzt abgleichen“; bitte in DEVONthink To Go nach doppelten Einträgen sehen. Details: Heft → DEVONthink → Letzter Rücksprung.txt")
             }
         }
+        let done = runDone, progress = runProgress
         sent = 0
-        finish(messages: messages, done: results.count)
+        runDone = 0
+        runProgress = false
+        runMessages = []
+        finish(messages: messages, done: done)
         // Weitere Runde, wenn neu Angelegtes jetzt seine Kennung hat (höchstens fünf am Stück)
-        if url.path == "/fertig", r.progress, rounds < 4 {
+        if path == "/fertig", progress, rounds < 4 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { start(nextRound: true) }
         }
-        return true
     }
 
     private static func finish(messages: [String], done: Int = 0) {

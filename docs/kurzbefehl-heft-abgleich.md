@@ -16,9 +16,11 @@ Textdatei anhängen“, also auch keine Ordnerwahl):
    die Zeile `id<Tab>Kennung` bzw. `id<Tab>FEHLER Text` an eine Textvariable `Ergebnis`
    anhängen („Zur Variable hinzufügen“). Fehler einer DTTG-Aktion möglichst abfangen
    (sonst bricht der ganze Lauf ab, siehe unten).
-3. Letzte Aktion: **„Ausgabe stoppen und ausgeben“** mit `Ergebnis` (Zeilen mit Zeilenumbruch
-   verbunden, „Text kombinieren“). Shortcuts hängt die Ausgabe an x-success als `result`
-   an; Heft liest sie daraus.
+3. Am Ende die Zeilen mit „Text kombinieren“ (Zeilenumbruch) verbinden, mit „URL codieren“
+   codieren und als letzte Aktion **„URL öffnen“** mit
+   `heftpad://dttg/ergebnis?result=<codierter Text>` ausführen. Der Rücksprung über das
+   `result` von x-success kommt auf iPadOS 27 nicht an (getestet 2026-10-11), daher
+   dieser direkte Weg. Heft wertet x-success danach nur noch als Abschluss.
 
 Zum Testen per ▶ ohne Eingabe darf der Kurzbefehl einfach mit leerer Ausgabe enden.
 
