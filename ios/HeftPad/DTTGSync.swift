@@ -124,6 +124,8 @@ enum DTTGSync {
     // MARK: - Ablauf
 
     private static var startedAt: Date?
+    /// Kurzbefehl wurde gerade gestartet und ist noch nicht zurück
+    static var running: Bool { startedAt.map { Date().timeIntervalSince($0) < 60 } ?? false }
     private static var rounds = 0
     private static var sent = 0
 
@@ -201,9 +203,11 @@ enum DTTGSync {
         var text = (try? String(contentsOf: resultURL, encoding: .utf8)) ?? ""
         // Zusätzlich die Ausgabe des Kurzbefehls („Ausgabe stoppen und ausgeben“),
         // die x-success als result mitliefert – braucht keinen Dateizugriff
-        if let out = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "result" })?.value {
-            text += "\n" + out
-        }
+        let out = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "result" })?.value
+        if let out { text += "\n" + out }
+        // Zur Fehlersuche: letzten Rücksprung festhalten (Dateien-App → Heft → DEVONthink)
+        let log = "\(ISO8601DateFormatter().string(from: Date()))\n\(url.absoluteString)\n\nresult: \(out.map { "\($0.count) Zeichen" } ?? "fehlt")\n\(out ?? "")\n"
+        try? Data(log.utf8).write(to: exchangeDir.appendingPathComponent("Letzter Rücksprung.txt"), options: .atomic)
         let results: [(id: String, value: String)] = text.split(whereSeparator: \.isNewline).compactMap { line in
             let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
             guard parts.count == 2, !parts[0].isEmpty else { return nil }
@@ -229,7 +233,7 @@ enum DTTGSync {
             // „An Textdatei anhängen“) – sonst würde dasselbe immer wieder angelegt
             if results.isEmpty, sent > 0 {
                 stalled = true
-                messages.append("Kurzbefehl „\(shortcutName)“ lief, hat aber keine Ergebnis.txt in Heft → DEVONthink geschrieben. Bitte bei „An Textdatei anhängen“ diesen Ordner wählen und in DEVONthink To Go nach doppelten Einträgen sehen.")
+                messages.append("Kurzbefehl „\(shortcutName)“ lief, hat aber nichts zurückgemeldet (" + (out == nil ? "keine Ausgabe" : "Ausgabe ohne Ergebniszeilen") + "). Heft wiederholt erst nach „Jetzt abgleichen“; bitte in DEVONthink To Go nach doppelten Einträgen sehen. Details: Heft → DEVONthink → Letzter Rücksprung.txt")
             }
         }
         sent = 0
