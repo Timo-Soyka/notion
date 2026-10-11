@@ -6,6 +6,7 @@ import { icon } from '../ui/icons.js';
 import { block, isEmptyHTML } from '../core/markdown.js';
 import { segsToText, htmlToSegs } from '../core/inline.js';
 import { isPalm, onPenDown } from '../palm.js';
+import { penBlocks } from './penmode.js';
 
 const CAN_NEST = (b) => !['columns', 'column', 'hr', 'pagebreak', 'toc'].includes(b.type);
 
@@ -306,6 +307,13 @@ export function attachDnd(ed) {
     const onGrip = !!(t.closest && t.closest('.blk-handle .grip')) && handle.classList.contains('show') && hoverBlock;
     return onGrip ? hoverBlock : gripZoneAt(e.clientX, e.clientY);
   };
+  // Pencil im Modus „Blöcke“ (Doppeltippen, penmode.js): der ganze Block ist Griff
+  const penBlockTarget = (e) => {
+    const t = e.target;
+    if (!t.closest || t.closest('.popover, .doc-header, .blk-handle button:not(.grip), .col-resize, .tcol-resize, .plot-resize, .img-handle')) return null;
+    const el = t.closest('.blk:not(.col)');
+    return el && ed.blocksEl.contains(el) ? ed.find(el.dataset.id) : blockAt(e.clientX, e.clientY);
+  };
   d.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' || ed.readonly || isPalm(e)) return;
     // Finger: jede Berührung, nicht nur die erste. Liegt schon etwas auf (meist der
@@ -318,8 +326,9 @@ export function attachDnd(ed) {
     if (active) { if (active.type === e.pointerType || performance.now() - active.last > 1500) active.abort(); else return; }
     // Ein Griff, der zu einem gelöschten Block gehört, zählt nicht
     if (hoverBlock && !ed.byId.has(hoverBlock.id)) { hoverBlock = null; handle.classList.remove('show'); }
-    const b = gripTarget(e);
-    if (e.pointerType === 'pen') shield(!!b);
+    const blockMode = e.pointerType === 'pen' && penBlocks();
+    const b = gripTarget(e) || (blockMode ? penBlockTarget(e) : null);
+    if (e.pointerType === 'pen') shield(blockMode || !!b);
     if (!b) return;
     // Keine nachgemachten Mausklicks, nichts darunter reagiert (offene Menüs schließt commit unten)
     e.preventDefault();
@@ -335,7 +344,7 @@ export function attachDnd(ed) {
     // Alle weiteren Ereignisse dieser Berührung hierher – auch wenn das berührte
     // Element unterwegs neu gezeichnet wird
     try { d.setPointerCapture(e.pointerId); } catch { /* egal */ }
-    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: shown && !wasOpen, type: e.pointerType, commit });
+    startDrag(b, e.clientX, e.clientY, { id: e.pointerId, menu: (shown || blockMode) && !wasOpen, type: e.pointerType, commit });
   }, true);
   // Solange der Griff gehalten wird: kein Scrollen
   d.addEventListener('touchstart', (e) => { if (touchGrab && e.cancelable) e.preventDefault(); }, { passive: false });
@@ -346,14 +355,14 @@ export function attachDnd(ed) {
   // preventDefault auf touchstart hält Scribble nicht auf. Deshalb sind
   // Textfelder für die Trefferprüfung unsichtbar (pointer-events: none, siehe
   // .pen-grip in editor.css), solange der Stift über der Griffzone schwebt oder
-  // den Griff hält; dann findet Scribble keins.
+  // den Griff hält – im Modus „Blöcke“ überall –; dann findet Scribble keins.
   const shield = (on) => d.classList.toggle('pen-grip', on);
   let hoverRaf = 0, hoverAtPen = null;
   d.addEventListener('pointermove', (e) => {
     if (e.pointerType !== 'pen' || e.buttons || touchGrab || dragging || ed.readonly) return;
     hoverAtPen = { target: e.target, clientX: e.clientX, clientY: e.clientY };
     if (hoverRaf) return;
-    hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; if (!touchGrab) shield(!!gripTarget(hoverAtPen)); });
+    hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; if (!touchGrab) shield(penBlocks() || !!gripTarget(hoverAtPen)); });
   }, true);
   d.addEventListener('pointerleave', (e) => { if (e.pointerType === 'pen' && !touchGrab) shield(false); });
 
