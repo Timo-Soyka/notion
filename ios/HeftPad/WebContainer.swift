@@ -67,6 +67,7 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
         MirrorStore.shared.onManifestChange = { [weak self] in DispatchQueue.main.async { self?.checkMirrorSoon() } }
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.checkMirror() }
         NotificationCenter.default.addObserver(self, selector: #selector(becameActive), name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(dttgDone(_:)), name: DTTGSync.doneNotification, object: nil)
         #if DEBUG
         DebugHooks.start(controller: self)
         #endif
@@ -75,6 +76,16 @@ final class WebController: UIViewController, PadHost, WKNavigationDelegate, WKUI
     @objc private func becameActive() {
         emit("app-active", [:])
         checkMirror()
+    }
+
+    /// Kurzbefehl „Heft-Abgleich“ ist zurück: Baum neu zeigen, Fehler melden
+    @objc private func dttgDone(_ note: Notification) {
+        checkMirror()
+        emit("tree-changed", [:])
+        for m in note.userInfo?["messages"] as? [String] ?? [] {
+            emit("toast", ["message": "DEVONthink To Go: \(m)", "type": "error"])
+        }
+        emit("sync-changed", ["done": note.userInfo?["done"] ?? 0])
     }
 
     // Mehrere Meldungen kurz hintereinander zählen einmal

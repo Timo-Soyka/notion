@@ -77,6 +77,17 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     private func handle(_ cmd: String, _ a: [String: Any], _ reply: @escaping (Result<Any, Error>) -> Void) {
         let s = { (k: String) -> String in (a[k] as? String) ?? "" }
+        // Abgleich über DEVONthink To Go: nach Änderungen (bei Ruhe) und beim Wechsel des Eintrags
+        if DTTGSync.enabled {
+            switch cmd {
+            case "note.write", "note.create", "group.create", "record.rename", "record.move", "record.trash":
+                DispatchQueue.main.async { DTTGSync.changed() }
+            case "note.read":
+                let uuid = s("uuid")
+                DispatchQueue.main.async { DTTGSync.opened(uuid) }
+            default: break
+            }
+        }
         switch cmd {
         case "app.info":
             reply(.success(["version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1", "native": true, "platform": "ipad"]))
@@ -478,6 +489,19 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "chem.lookup":
             Chem.lookup(name: s("name")) { reply(.success($0 ?? NSNull())) }
 
+        case "sync.now" where DTTGSync.enabled:
+            // Abgleich ohne Mac: Kurzbefehl „Heft-Abgleich“ starten
+            DispatchQueue.main.async { let started = DTTGSync.start(); reply(.success(["ok": true, "dttg": true, "started": started, "running": !started && DTTGSync.running])) }
+
+        case "dttg.enable":
+            let on = a["enabled"] as? Bool
+            let auto = a["auto"] as? Bool
+            DispatchQueue.main.async {
+                if let on { DTTGSync.setEnabled(on) }
+                if let auto { DTTGSync.auto = auto }
+                reply(.success(["enabled": DTTGSync.enabled, "auto": DTTGSync.auto]))
+            }
+
         case "sync.now":
             bg(reply) {
                 self.store.reloadManifest()
@@ -513,8 +537,27 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
                 }
             }
 
+        case "dttg.probe":
+            // Prüfung für den Abgleich ohne Mac: DEVONthink-To-Go-Datenbank wählen und Bericht zeigen
+            DispatchQueue.main.async {
+                guard let vc = self.host?.presenter else { reply(.success(false)); return }
+                ProbeFolderPicker.pick(from: vc) { url in
+                    guard let url else { reply(.success(false)); return }
+                    self.work.async {
+                        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                        let text = isDir ? DTTGProbe.run(folder: url) : DTTGProbe.run(file: url)
+                        DispatchQueue.main.async {
+                            let nav = UINavigationController(rootViewController: ProbeReportController(text: text))
+                            vc.present(nav, animated: true)
+                            reply(.success(true))
+                        }
+                    }
+                }
+            }
+
         case "sync.info":
-            bg(reply) { ["enabled": true, "label": self.syncLabel(), "pending": self.store.pendingCount] }
+            bg(reply) { ["enabled": true, "label": self.syncLabel(), "pending": self.store.pendingCount,
+                         "dttg": DTTGSync.enabled, "dttgAuto": DTTGSync.auto, "dttgQueued": DTTGSync.queuedCount] }
 
         default:
             reply(.failure(err("Auf dem iPad noch nicht verfügbar (\(cmd))")))
@@ -526,6 +569,10 @@ final class PadBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// „iCloud · Mac vor 3 Min. · 2 Änderungen warten“ – der Mac meldet sich
     /// mindestens alle zehn Minuten; bleibt das aus, läuft Heft dort wohl nicht
     private func syncLabel() -> String {
+        if DTTGSync.enabled {
+            let n = DTTGSync.queuedCount
+            return "DEVONthink To Go · " + (n == 0 ? "alles eingetragen" : n == 1 ? "1 Änderung wartet" : "\(n) Änderungen warten")
+        }
         var parts = ["iCloud"]
         if store.macOutdated { parts.append("Heft am Mac ist noch eine ältere Version – bitte dort aktualisieren") }
         if let g = store.lastSync, let date = ISO8601DateFormatter().date(from: g) {
