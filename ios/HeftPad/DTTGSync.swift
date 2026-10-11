@@ -135,12 +135,14 @@ enum DTTGSync {
         let fm = FileManager.default
         let dir = exchangeDir
         let att = dir.appendingPathComponent("Anhänge", isDirectory: true)
+        var json = ""
         try? fm.removeItem(at: att)
         try? fm.removeItem(at: dir.appendingPathComponent("Ergebnis.txt"))
         do {
             if !batch.files.isEmpty { try fm.createDirectory(at: att, withIntermediateDirectories: true) }
             for f in batch.files { try fm.copyItem(at: f.from, to: att.appendingPathComponent(f.name)) }
             let data = try JSONSerialization.data(withJSONObject: ["items": batch.items], options: [.prettyPrinted, .sortedKeys])
+            json = String(decoding: data, as: UTF8.self)
             // Koordiniert schreiben: Erst dann erfährt die Dateien-Ablage („Auf meinem iPad“),
             // über die der Kurzbefehl liest, sicher von der neuen Datei
             var e: NSError?
@@ -160,6 +162,10 @@ enum DTTGSync {
         c.path = "/run-shortcut"
         c.queryItems = [
             URLQueryItem(name: "name", value: shortcutName),
+            // Derselbe Inhalt auch als Eingabe des Kurzbefehls („Kurzbefehleingabe“) –
+            // dann braucht er keinen Dateizugriff zum Lesen
+            URLQueryItem(name: "input", value: "text"),
+            URLQueryItem(name: "text", value: json),
             URLQueryItem(name: "x-success", value: "heftpad://dttg/fertig"),
             URLQueryItem(name: "x-error", value: "heftpad://dttg/fehler"),
             URLQueryItem(name: "x-cancel", value: "heftpad://dttg/abbruch"),

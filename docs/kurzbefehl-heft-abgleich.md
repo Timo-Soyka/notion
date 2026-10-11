@@ -8,7 +8,9 @@ Heft: `ios/HeftPad/DTTGSync.swift`, `MirrorStore.dttgBatch()/dttgApply()`.
 
 `shortcuts://x-callback-url/run-shortcut?name=Heft-Abgleich&x-success=heftpad://dttg/fertig&x-error=heftpad://dttg/fehler&x-cancel=heftpad://dttg/abbruch`
 
-Keine Eingabe. Der Rücksprung zu Heft geschieht über x-callback von selbst.
+Zusätzlich `&input=text&text=<Inhalt von Abgleich.json>`: Der Kurzbefehl kann die
+Aufträge also auch direkt aus der „Kurzbefehleingabe“ lesen (Wörterbuch aus Eingabe)
+statt aus der Datei. Der Rücksprung zu Heft geschieht über x-callback von selbst.
 
 ## Dateien („Auf meinem iPad → Heft → DEVONthink“ = Documents/DEVONthink der App)
 
