@@ -23,6 +23,13 @@ Kennung = UUID oder `x-devonthink-item://UUID` (Heft nimmt beides). Für Ändern
 Umbenennen, Verschieben, Löschen genügt irgendein Wert (z. B. die UUID des Eintrags);
 für alles Neu-Angelegte muss es die Kennung des neuen Eintrags sein.
 
+Wichtig: Auch „An Textdatei anhängen“ muss auf den Ordner Heft → DEVONthink zeigen
+(ohne Ordner landet `Ergebnis.txt` in iCloud Drive → Kurzbefehle, Heft sieht dann
+nichts und meldet „keine Ergebnis.txt“; selbst wiederholt wird dann erst nach
+„Jetzt abgleichen“, damit nichts doppelt angelegt wird). Alternativ oder zusätzlich
+kann der Kurzbefehl am Ende dieselben Zeilen mit „Ausgabe stoppen und ausgeben“
+zurückgeben; Heft liest sie aus dem `result` von x-success.
+
 Die Zeile wird **nach jedem Auftrag** angehängt („An Textdatei anhängen“), damit bei
 einem Abbruch mitten im Stapel nichts doppelt angelegt wird.
 
