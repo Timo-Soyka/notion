@@ -141,7 +141,14 @@ enum DTTGSync {
             if !batch.files.isEmpty { try fm.createDirectory(at: att, withIntermediateDirectories: true) }
             for f in batch.files { try fm.copyItem(at: f.from, to: att.appendingPathComponent(f.name)) }
             let data = try JSONSerialization.data(withJSONObject: ["items": batch.items], options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: dir.appendingPathComponent("Abgleich.json"), options: .atomic)
+            // Koordiniert schreiben: Erst dann erfährt die Dateien-Ablage („Auf meinem iPad“),
+            // über die der Kurzbefehl liest, sicher von der neuen Datei
+            var e: NSError?
+            var inner: Error?
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: dir.appendingPathComponent("Abgleich.json"), options: .forReplacing, error: &e) { u in
+                do { try data.write(to: u, options: .atomic) } catch { inner = error }
+            }
+            if let x = e ?? inner { throw x }
         } catch {
             finish(messages: ["Abgleich konnte nicht vorbereitet werden: \(error.localizedDescription)"])
             return false
@@ -159,10 +166,14 @@ enum DTTGSync {
         ]
         guard let url = c.url else { return false }
         startedAt = Date()
-        UIApplication.shared.open(url) { ok in
-            guard !ok else { return }
-            startedAt = nil
-            finish(messages: ["Kurzbefehle lässt sich nicht öffnen."])
+        // Kurz warten, bis die Datei in der Dateien-Ablage sichtbar ist – sonst meldet
+        // „Datei abrufen“ im Kurzbefehl, sie sei nicht vorhanden
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            UIApplication.shared.open(url) { ok in
+                guard !ok else { return }
+                startedAt = nil
+                finish(messages: ["Kurzbefehle lässt sich nicht öffnen."])
+            }
         }
         return true
     }
@@ -181,8 +192,11 @@ enum DTTGSync {
             return (parts[0].trimmingCharacters(in: .whitespaces), parts[1])
         }
         try? fm.removeItem(at: resultURL)
-        try? fm.removeItem(at: exchangeDir.appendingPathComponent("Abgleich.json"))
-        try? fm.removeItem(at: exchangeDir.appendingPathComponent("Anhänge"))
+        // Bei Fehler/Abbruch liegen lassen: so sieht man in der Dateien-App, was übergeben wurde
+        if url.path == "/fertig" {
+            try? fm.removeItem(at: exchangeDir.appendingPathComponent("Abgleich.json"))
+            try? fm.removeItem(at: exchangeDir.appendingPathComponent("Anhänge"))
+        }
 
         let r = MirrorStore.shared.dttgApply(results)
         var messages = r.failures
