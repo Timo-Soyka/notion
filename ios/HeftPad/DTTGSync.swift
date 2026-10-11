@@ -94,14 +94,17 @@ enum DTTGSync {
     private static let idleDelay: TimeInterval = 45
     private static var idleWork: DispatchWorkItem?
     private static var lastNote: String?
+    /// Letzter Lauf kam ohne Rückmeldung zurück: nicht selbst wiederholen (jeder Lauf
+    /// würde Neues erneut anlegen), bis „Jetzt abgleichen“ getippt wird
+    private static var stalled = false
 
     /// Nach einer Änderung (Hauptthread): abgleichen, sobald eine Weile nichts mehr geändert wurde
     static func changed() {
-        guard enabled, auto else { return }
+        guard enabled, auto, !stalled else { return }
         idleWork?.cancel()
         let w = DispatchWorkItem {
             guard UIApplication.shared.applicationState == .active else { return }
-            start()
+            start(manual: false)
         }
         idleWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + idleDelay, execute: w)
@@ -110,11 +113,11 @@ enum DTTGSync {
     /// Anderer Eintrag geöffnet (Hauptthread): Offenes vom vorigen gleich abgleichen
     static func opened(_ uuid: String) {
         defer { if !uuid.isEmpty { lastNote = uuid } }
-        guard enabled, auto, let prev = lastNote, prev != uuid, !uuid.isEmpty, queuedCount > 0 else { return }
+        guard enabled, auto, !stalled, let prev = lastNote, prev != uuid, !uuid.isEmpty, queuedCount > 0 else { return }
         idleWork?.cancel()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             guard UIApplication.shared.applicationState == .active else { return }
-            start()
+            start(manual: false)
         }
     }
 
@@ -122,11 +125,14 @@ enum DTTGSync {
 
     private static var startedAt: Date?
     private static var rounds = 0
+    private static var sent = 0
 
     /// Kurzbefehl starten (Hauptthread). false: nichts zu tun, ausgeschaltet oder läuft schon
     @discardableResult
-    static func start(nextRound: Bool = false) -> Bool {
+    static func start(nextRound: Bool = false, manual: Bool = true) -> Bool {
         guard enabled else { return false }
+        if manual && !nextRound { stalled = false }
+        if stalled { return false }
         if let t = startedAt, Date().timeIntervalSince(t) < 60 { return false }
         rounds = nextRound ? rounds + 1 : 0
         let batch = MirrorStore.shared.dttgBatch()
@@ -135,12 +141,14 @@ enum DTTGSync {
         let fm = FileManager.default
         let dir = exchangeDir
         let att = dir.appendingPathComponent("Anhänge", isDirectory: true)
+        var json = ""
         try? fm.removeItem(at: att)
         try? fm.removeItem(at: dir.appendingPathComponent("Ergebnis.txt"))
         do {
             if !batch.files.isEmpty { try fm.createDirectory(at: att, withIntermediateDirectories: true) }
             for f in batch.files { try fm.copyItem(at: f.from, to: att.appendingPathComponent(f.name)) }
             let data = try JSONSerialization.data(withJSONObject: ["items": batch.items], options: [.prettyPrinted, .sortedKeys])
+            json = String(decoding: data, as: UTF8.self)
             // Koordiniert schreiben: Erst dann erfährt die Dateien-Ablage („Auf meinem iPad“),
             // über die der Kurzbefehl liest, sicher von der neuen Datei
             var e: NSError?
@@ -160,12 +168,17 @@ enum DTTGSync {
         c.path = "/run-shortcut"
         c.queryItems = [
             URLQueryItem(name: "name", value: shortcutName),
+            // Derselbe Inhalt auch als Eingabe des Kurzbefehls („Kurzbefehleingabe“) –
+            // dann braucht er keinen Dateizugriff zum Lesen
+            URLQueryItem(name: "input", value: "text"),
+            URLQueryItem(name: "text", value: json),
             URLQueryItem(name: "x-success", value: "heftpad://dttg/fertig"),
             URLQueryItem(name: "x-error", value: "heftpad://dttg/fehler"),
             URLQueryItem(name: "x-cancel", value: "heftpad://dttg/abbruch"),
         ]
         guard let url = c.url else { return false }
         startedAt = Date()
+        sent = batch.items.count
         // Kurz warten, bis die Datei in der Dateien-Ablage sichtbar ist – sonst meldet
         // „Datei abrufen“ im Kurzbefehl, sie sei nicht vorhanden
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
@@ -185,7 +198,12 @@ enum DTTGSync {
         startedAt = nil
         let fm = FileManager.default
         let resultURL = exchangeDir.appendingPathComponent("Ergebnis.txt")
-        let text = (try? String(contentsOf: resultURL, encoding: .utf8)) ?? ""
+        var text = (try? String(contentsOf: resultURL, encoding: .utf8)) ?? ""
+        // Zusätzlich die Ausgabe des Kurzbefehls („Ausgabe stoppen und ausgeben“),
+        // die x-success als result mitliefert – braucht keinen Dateizugriff
+        if let out = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "result" })?.value {
+            text += "\n" + out
+        }
         let results: [(id: String, value: String)] = text.split(whereSeparator: \.isNewline).compactMap { line in
             let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
             guard parts.count == 2, !parts[0].isEmpty else { return nil }
@@ -207,8 +225,14 @@ enum DTTGSync {
         case "/abbruch":
             messages.append("Abgleich mit DEVONthink To Go abgebrochen.")
         default:
-            break
+            // Lief durch, meldete aber nichts: Ergebnis.txt liegt woanders (Ordner bei
+            // „An Textdatei anhängen“) – sonst würde dasselbe immer wieder angelegt
+            if results.isEmpty, sent > 0 {
+                stalled = true
+                messages.append("Kurzbefehl „\(shortcutName)“ lief, hat aber keine Ergebnis.txt in Heft → DEVONthink geschrieben. Bitte bei „An Textdatei anhängen“ diesen Ordner wählen und in DEVONthink To Go nach doppelten Einträgen sehen.")
+            }
         }
+        sent = 0
         finish(messages: messages, done: results.count)
         // Weitere Runde, wenn neu Angelegtes jetzt seine Kennung hat (höchstens fünf am Stück)
         if url.path == "/fertig", r.progress, rounds < 4 {

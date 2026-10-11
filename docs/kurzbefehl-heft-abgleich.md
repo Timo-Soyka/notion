@@ -8,7 +8,9 @@ Heft: `ios/HeftPad/DTTGSync.swift`, `MirrorStore.dttgBatch()/dttgApply()`.
 
 `shortcuts://x-callback-url/run-shortcut?name=Heft-Abgleich&x-success=heftpad://dttg/fertig&x-error=heftpad://dttg/fehler&x-cancel=heftpad://dttg/abbruch`
 
-Keine Eingabe. Der Rücksprung zu Heft geschieht über x-callback von selbst.
+Zusätzlich `&input=text&text=<Inhalt von Abgleich.json>`: Der Kurzbefehl kann die
+Aufträge also auch direkt aus der „Kurzbefehleingabe“ lesen (Wörterbuch aus Eingabe)
+statt aus der Datei. Der Rücksprung zu Heft geschieht über x-callback von selbst.
 
 ## Dateien („Auf meinem iPad → Heft → DEVONthink“ = Documents/DEVONthink der App)
 
@@ -20,6 +22,13 @@ Keine Eingabe. Der Rücksprung zu Heft geschieht über x-callback von selbst.
 Kennung = UUID oder `x-devonthink-item://UUID` (Heft nimmt beides). Für Ändern,
 Umbenennen, Verschieben, Löschen genügt irgendein Wert (z. B. die UUID des Eintrags);
 für alles Neu-Angelegte muss es die Kennung des neuen Eintrags sein.
+
+Wichtig: Auch „An Textdatei anhängen“ muss auf den Ordner Heft → DEVONthink zeigen
+(ohne Ordner landet `Ergebnis.txt` in iCloud Drive → Kurzbefehle, Heft sieht dann
+nichts und meldet „keine Ergebnis.txt“; selbst wiederholt wird dann erst nach
+„Jetzt abgleichen“, damit nichts doppelt angelegt wird). Alternativ oder zusätzlich
+kann der Kurzbefehl am Ende dieselben Zeilen mit „Ausgabe stoppen und ausgeben“
+zurückgeben; Heft liest sie aus dem `result` von x-success.
 
 Die Zeile wird **nach jedem Auftrag** angehängt („An Textdatei anhängen“), damit bei
 einem Abbruch mitten im Stapel nichts doppelt angelegt wird.
